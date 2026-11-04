@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Получить исходники
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Проверить формат
         run: cargo fmt --all -- --check
       - name: Проверить Clippy
@@ -40,6 +42,8 @@ jobs:
     steps:
       - name: Получить исходники
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Выполнить тесты
         run: cargo test --locked --all-features
       - name: Собрать приложение
@@ -56,6 +60,8 @@ jobs:
     steps:
       - name: Получить исходники
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Собрать приложение
         run: cargo build --locked
       - name: Проверить CLI и контракты версий
