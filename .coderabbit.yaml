@@ -1,0 +1,91 @@
+# yaml-language-server: $schema=https://www.coderabbit.ai/integrations/schema.v2.json
+language: ru-RU
+early_access: false
+reviews:
+  profile: assertive
+  review_status: false
+  request_changes_workflow: false
+  fail_commit_status: false
+  high_level_summary_instructions: >-
+    Объясняй фактический diff, его цель и наблюдаемый результат. Сверяй с требованиями
+    PR и каноническими владельцами проекта. Отличай планируемую архитектуру от
+    реализации; не утверждай наличие приложения или CI по одному описанию.
+  suggested_labels: false
+  suggested_reviewers: false
+  in_progress_fortune: false
+  path_instructions:
+    - path: "**/*"
+      instructions: >-
+        Читай AGENTS.md и карту владельцев .codex/context/INDEX.md, затем применимые
+        контракты. Ищи подтверждаемые ошибки и регрессии по реальному diff и контексту:
+        условия проявления, нарушенное правило и последствия. Проверяй переносимость
+        Windows/Linux/macOS, независимость предметного ядра и безопасную обработку
+        недоверенного содержимого по ARCHITECTURE.md. Не предлагай косметические
+        переделки и не считай предположение доказанным дефектом. Не требуй фиктивных
+        Cargo-проектов, тестов или CI для инфраструктурной документации.
+    - path: ".codex/context/**"
+      instructions: >-
+        Проверяй единственного владельца каждого правила, существование ссылок,
+        согласованность планируемых границ и отсутствие временного журнала PR.
+    - path: "**/SKILL.md"
+      instructions: >-
+        Проверяй смысловую маршрутизацию и чтение канонической процедуры, актуальность
+        HEAD, границы разрешений и отсутствие дублирующей Git-процедуры. Входы Claude
+        должны работать без символических ссылок. CodeRabbit запускается только по явному поручению.
+  auto_review:
+    enabled: false
+    auto_incremental_review: false
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: "off"
+    description:
+      mode: "off"
+    issue_assessment:
+      mode: "off"
+chat:
+  art: false
+  auto_reply: false
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - files: AGENTS.md
+        applyTo: "**/*"
+      - files: .codex/context/INDEX.md
+        applyTo: "**/*"
+      - files: .codex/context/ARCHITECTURE.md
+        applyTo: "**/*"
+      - files: .codex/context/DEVELOPMENT.md
+        applyTo: "**/*"
+      - files: .codex/context/VERIFICATION.md
+        applyTo: "**/*"
+      - files: .codex/context/VERSIONING.md
+        applyTo: "**/*"
+  learnings:
+    scope: local
+  issues:
+    scope: local
+  pull_requests:
+    scope: local
+  jira:
+    usage: disabled
+  linear:
+    usage: disabled
+  mcp:
+    usage: disabled
+issue_enrichment:
+  planning:
+    enabled: false
+    auto_planning:
+      enabled: false
