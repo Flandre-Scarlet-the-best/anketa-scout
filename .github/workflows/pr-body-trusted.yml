@@ -28,6 +28,6 @@ jobs:
         env:
           EVENT_PATH: ${{ github.event_path }}
         run: |
-          jq -r '.pull_request.body // ""' "$EVENT_PATH" > "$RUNNER_TEMP/pr-body.md"
+          jq -j '.pull_request.body // ""' "$EVENT_PATH" > "$RUNNER_TEMP/pr-body.md"
           "$RUNNER_TEMP/agent-contracts" pr-body "$RUNNER_TEMP/pr-body.md"
 

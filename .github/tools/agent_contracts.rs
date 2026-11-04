@@ -59,6 +59,21 @@ fn frontmatter_name(text: &str) -> Result<String, String> {
     Ok(name)
 }
 
+fn frontmatter_has_line(text: &str, expected: &str) -> bool {
+    let mut lines = text.lines();
+    if lines.next() != Some("---") {
+        return false;
+    }
+    let mut found = false;
+    for line in lines {
+        if line.trim() == "---" {
+            return found;
+        }
+        found |= line.trim() == expected;
+    }
+    false
+}
+
 fn links_in(text: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut rest = text;
@@ -147,7 +162,9 @@ fn check_skills(root: &Path) -> Result<(), String> {
                 if !body.contains(&reference) {
                     errors.push(format!("{name}: вход Claude не указывает канонический skill"));
                 }
-                if name == "scout-coderabbit-review" && !body.lines().any(|line| line.trim() == "disable-model-invocation: true") {
+                if name == "scout-coderabbit-review"
+                    && !frontmatter_has_line(&body, "disable-model-invocation: true")
+                {
                     errors.push("CodeRabbit: у Claude разрешён неявный вызов".into());
                 }
             }
@@ -244,13 +261,18 @@ fn check_pr_body(body: &str) -> Result<(), String> {
     let mut inside_comment = false;
     for line in normalized.lines() {
         if let Some((marker, minimum)) = fence {
-            if let Some((closing_marker, count)) = fence_prefix(line) {
-                if closing_marker == marker
+            let closes_fence = if let Some((closing_marker, count)) = fence_prefix(line) {
+                closing_marker == marker
                     && count >= minimum
                     && line.trim().chars().all(|ch| ch == marker)
-                {
-                    fence = None;
-                }
+            } else {
+                false
+            };
+            if closes_fence {
+                fence = None;
+            } else if let Some((_, text)) = parts.last_mut() {
+                text.push_str(line);
+                text.push('\n');
             }
             continue;
         }
@@ -274,18 +296,27 @@ fn check_pr_body(body: &str) -> Result<(), String> {
     if fence.is_some() || inside_comment {
         return Err("PR body содержит незакрытый блок кода или HTML-комментарий".into());
     }
-    if parts.len() < REQUIRED_SECTIONS.len() {
-        return Err(format!("не хватает разделов PR: {} из {}", parts.len(), REQUIRED_SECTIONS.len()));
-    }
-    for (i, expected) in REQUIRED_SECTIONS.iter().enumerate() {
-        let (title, content) = &parts[i];
-        if title != expected {
-            return Err(format!("раздел {}: ожидается «{}», найден «{}»", i + 1, expected, title));
+    let mut expected_index = 0;
+    for (title, content) in &parts {
+        if expected_index == REQUIRED_SECTIONS.len() {
+            continue;
         }
+        let Some(position) = REQUIRED_SECTIONS.iter().position(|section| *section == title.as_str()) else {
+            continue;
+        };
+        if position != expected_index {
+            let expected = REQUIRED_SECTIONS[expected_index];
+            return Err(format!("раздел {}: ожидается «{}», найден «{}»", expected_index + 1, expected, title));
+        }
+        let expected = REQUIRED_SECTIONS[expected_index];
         let meaningful = content.chars().filter(|c| c.is_alphanumeric()).count();
         if meaningful < 12 || content.trim().eq_ignore_ascii_case("TODO") {
             return Err(format!("раздел «{expected}» не содержит содержательного описания"));
         }
+        expected_index += 1;
+    }
+    if expected_index < REQUIRED_SECTIONS.len() {
+        return Err(format!("не хватает разделов PR: {} из {}", expected_index, REQUIRED_SECTIONS.len()));
     }
     let mut titles = BTreeSet::new();
     for (title, _) in &parts {
@@ -328,6 +359,11 @@ mod tests {
         assert!(check_pr_body(&s).is_err());
     }
     #[test]
+    fn rejects_duplicate_required_heading_after_all_required_sections() {
+        let s = format!("{}\n## Цель\nДублирующий раздел с содержательным текстом.", good());
+        assert!(check_pr_body(&s).is_err());
+    }
+    #[test]
     fn rejects_empty_section() {
         let s = good().replace("## Готовность\nПодтверждённый результат и реальное ограничение для этого раздела.", "## Готовность\n—");
         assert!(check_pr_body(&s).is_err());
@@ -345,6 +381,21 @@ mod tests {
     fn parses_frontmatter() {
         assert_eq!(frontmatter_name("---\nname: scout-test\ndescription: Тест\n---\nТекст").unwrap(), "scout-test");
         assert!(frontmatter_name("---\nname: scout-test\n---\n").is_err());
+    }
+    #[test]
+    fn checks_claude_invocation_flag_only_in_frontmatter() {
+        let valid = "---\nname: scout-test\ndescription: Тест\ndisable-model-invocation: true\n---\nТекст";
+        let misplaced = "---\nname: scout-test\ndescription: Тест\n---\nТекст\ndisable-model-invocation: true";
+        assert!(frontmatter_has_line(valid, "disable-model-invocation: true"));
+        assert!(!frontmatter_has_line(misplaced, "disable-model-invocation: true"));
+    }
+    #[test]
+    fn allows_additional_sections_between_required_sections() {
+        let s = good().replace(
+            "## Проверки",
+            "## Безопасность\nПодтверждённая граница обработки недоверенных данных.\n\n## Проверки",
+        );
+        assert!(check_pr_body(&s).is_ok());
     }
 #[test]
     fn rejects_hidden_comment_heading() {
@@ -367,6 +418,14 @@ mod tests {
     #[test]
     fn accepts_fenced_example_after_required_sections() {
         let s = format!("{}\n```md\n## Не настоящий заголовок\n```\n", good());
+        assert!(check_pr_body(&s).is_ok());
+    }
+    #[test]
+    fn counts_fenced_content_when_checking_section_body() {
+        let s = good().replace(
+            "## Проверки\nПодтверждённый результат и реальное ограничение для этого раздела.",
+            "## Проверки\n```text\ncargo test --locked\nрезультат: 11 tests passed\n```",
+        );
         assert!(check_pr_body(&s).is_ok());
     }
 
