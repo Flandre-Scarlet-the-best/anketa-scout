@@ -235,7 +235,7 @@ fn fence_prefix(line: &str) -> Option<(char, usize)> {
 }
 
 fn check_pr_body(body: &str) -> Result<(), String> {
-    let normalized = body.replace("\\r\\n", "\\n").replace('\\r', "\\n");
+    let normalized = body.replace("\r\n", "\n").replace('\r', "\n");
     if normalized.chars().count() > 10_000 {
         return Err("PR body превышает 10 000 символов".into());
     }
@@ -268,7 +268,7 @@ fn check_pr_body(body: &str) -> Result<(), String> {
         }
         if let Some((_, text)) = parts.last_mut() {
             text.push_str(&visible);
-            text.push('\\n');
+            text.push('\n');
         }
     }
     if fence.is_some() || inside_comment {
@@ -348,7 +348,7 @@ mod tests {
     }
 #[test]
     fn rejects_hidden_comment_heading() {
-        let s = good().replace("## Цель", "<!--\\n## Цель\\n-->\\n## Подмена");
+        let s = good().replace("## Цель", "<!--\n## Цель\n-->\n## Подмена");
         assert!(check_pr_body(&s).is_err());
     }
     #[test]
@@ -359,14 +359,14 @@ mod tests {
     #[test]
     fn rejects_comment_only_content() {
         let s = good().replace(
-            "## Готовность\\nПодтверждённый результат и реальное ограничение для этого раздела.",
-            "## Готовность\\n<!-- Подтверждённый результат и реальное ограничение для этого раздела. -->"
+            "## Готовность\nПодтверждённый результат и реальное ограничение для этого раздела.",
+            "## Готовность\n<!-- Подтверждённый результат и реальное ограничение для этого раздела. -->"
         );
         assert!(check_pr_body(&s).is_err());
     }
     #[test]
     fn accepts_fenced_example_after_required_sections() {
-        let s = format!("{}\\n```md\\n## Не настоящий заголовок\\n```\\n", good());
+        let s = format!("{}\n```md\n## Не настоящий заголовок\n```\n", good());
         assert!(check_pr_body(&s).is_ok());
     }
 
