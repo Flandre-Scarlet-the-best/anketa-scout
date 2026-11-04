@@ -66,7 +66,8 @@ async fn execute(
         PathBuf::new()
     };
     let config = config::load(args.config.as_deref(), &default)?;
-    eprintln!(
+    let _ = writeln!(
+        io::stderr().lock(),
         "{}",
         diagnostic.paint(
             Role::Metadata,
@@ -125,7 +126,8 @@ async fn main() -> ExitCode {
             };
         }
         Err(_) => {
-            eprintln!(
+            let _ = writeln!(
+                io::stderr().lock(),
                 "Некорректные аргументы. Использование: anketa-scout [--config <ПУТЬ>]. Справка: --help."
             );
             return ExitCode::from(2);
@@ -144,7 +146,8 @@ async fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!(
+            let _ = writeln!(
+                io::stderr().lock(),
                 "{}",
                 diagnostic.paint(Role::Error, &format!("Ошибка: {error}"))
             );

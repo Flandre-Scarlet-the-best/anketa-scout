@@ -251,6 +251,7 @@ fn exclude_single_quotes(text: &str) -> String {
     let mut chars = text.char_indices().peekable();
     let mut previous = None;
     let mut quoted = false;
+    let mut quote = String::new();
     let mut instruction_start = INSTRUCTION
         .find(text.lines().next().unwrap_or(""))
         .map(|m| m.start());
@@ -266,14 +267,21 @@ fn exclude_single_quotes(text: &str) -> String {
             result.push(c);
         } else if c == '\'' && !quoted && !previous.is_some_and(word) {
             quoted = true;
-            result.push('\n');
+            quote.clear();
+            quote.push(c);
         } else if c == '\'' && quoted && !chars.peek().is_some_and(|(_, c)| word(*c)) {
             quoted = false;
-            result.push('\n');
+            quote.clear();
+            result.push_str("\n\n");
+        } else if quoted {
+            quote.push(c);
         } else if !quoted {
             result.push(c);
         }
         previous = Some(c);
+    }
+    if quoted {
+        result.push_str(&quote);
     }
     result
 }

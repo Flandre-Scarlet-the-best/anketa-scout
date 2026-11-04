@@ -211,6 +211,12 @@ fn single_quoted_contacts_and_descriptions_are_not_author_evidence() {
 }
 
 #[test]
+fn unmatched_single_quote_keeps_the_rest_of_an_authored_profile() {
+    let profile = classify(message("Люблю '90-е. Тг: synthetic_user")).unwrap();
+    assert_eq!(profile.contacts[0].value, "@synthetic_user");
+}
+
+#[test]
 fn bare_handle_does_not_establish_contact_platform() {
     let profile = classify(message("Произвольная заметка.<br>@synthetic_user")).unwrap();
     assert_eq!(profile.contacts[0].kind, ContactKind::Unknown);
