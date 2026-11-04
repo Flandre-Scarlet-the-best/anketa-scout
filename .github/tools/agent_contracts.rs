@@ -191,12 +191,12 @@ fn check_skills(root: &Path) -> Result<(), String> {
         println!("Агентские контракты: OK ({} skills)", found.len());
         Ok(())
     } else {
-        Err(errors.join("\\n"))
+        Err(errors.join("\n"))
     }
 }
 
 fn check_pr_body(body: &str) -> Result<(), String> {
-    let normalized = body.replace("\\r\\n", "\\n").replace('\\r', "\\n");
+    let normalized = body.replace("\r\n", "\n").replace('\r', "\n");
     if normalized.chars().count() > 10_000 {
         return Err("PR body превышает 10 000 символов".into());
     }
@@ -215,7 +215,7 @@ fn check_pr_body(body: &str) -> Result<(), String> {
             parts.push((title.trim_end_matches('#').trim().to_owned(), String::new()));
         } else if let Some((_, text)) = parts.last_mut() {
             text.push_str(line);
-            text.push('\\n');
+            text.push('\n');
         }
     }
     if parts.len() < REQUIRED_SECTIONS.len() {
@@ -250,7 +250,7 @@ fn main() {
     match result {
         Ok(()) => println!("Проверка пройдена"),
         Err(err) => {
-            eprintln!("Проверка не пройдена:\\n{err}");
+            eprintln!("Проверка не пройдена:\n{err}");
             process::exit(1);
         }
     }
@@ -261,8 +261,8 @@ mod tests {
     use super::*;
     fn good() -> String {
         REQUIRED_SECTIONS.iter()
-            .map(|section| format!("## {section}\\nПодтверждённый результат и реальное ограничение для этого раздела.\\n"))
-            .collect::<Vec<_>>().join("\\n")
+            .map(|section| format!("## {section}\nПодтверждённый результат и реальное ограничение для этого раздела.\n"))
+            .collect::<Vec<_>>().join("\n")
     }
     #[test]
     fn valid_body() { assert!(check_pr_body(&good()).is_ok()); }
@@ -273,12 +273,12 @@ mod tests {
     }
     #[test]
     fn rejects_empty_section() {
-        let s = good().replace("## Готовность\\nПодтверждённый результат и реальное ограничение для этого раздела.", "## Готовность\\n—");
+        let s = good().replace("## Готовность\nПодтверждённый результат и реальное ограничение для этого раздела.", "## Готовность\n—");
         assert!(check_pr_body(&s).is_err());
     }
     #[test]
     fn rejects_fenced_fake_heading() {
-        let s = format!("```md\\n## Цель\\n```\\n{}", good().replace("## Цель", "## Что-то другое"));
+        let s = format!("```md\n## Цель\n```\n{}", good().replace("## Цель", "## Что-то другое"));
         assert!(check_pr_body(&s).is_err());
     }
     #[test]
@@ -287,8 +287,8 @@ mod tests {
     }
     #[test]
     fn parses_frontmatter() {
-        assert_eq!(frontmatter_name("---\\nname: scout-test\\ndescription: Тест\\n---\\nТекст").unwrap(), "scout-test");
-        assert!(frontmatter_name("---\\nname: scout-test\\n---\\n").is_err());
+        assert_eq!(frontmatter_name("---\nname: scout-test\ndescription: Тест\n---\nТекст").unwrap(), "scout-test");
+        assert!(frontmatter_name("---\nname: scout-test\n---\n").is_err());
     }
     #[test]
     fn finds_markdown_links() {
