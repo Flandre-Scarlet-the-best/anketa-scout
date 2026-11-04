@@ -70,6 +70,13 @@ Rust через штатный rustup на runner. Linux-прогон не до�
 | Отмена и закрытие активного соединения | `pre_cancelled_run_never_starts_the_source`, `cancellation_drops_pending_source_instead_of_returning_partial_report`, `cancellation_stops_in_flight_request_and_closes_socket` |
 | FIFO, подделка служебных полей и пустой ответ без OP | `fifo_config_without_writer_is_rejected_without_blocking` (Unix), `remote_text_cannot_forge_report_headers_or_metadata_fields`, `missing_op_is_partial_even_when_count_is_zero` |
 | Невозможность внешней подмены авторского текста | compile-fail doctest `Message::authored_text` |
+| Полные таблицы, порядок, все контакты, URL и вложения | `full_tables_preserve_all_fields_and_order` |
+| Ширина 8/40/80/120, неизвестная и минимальная геометрия, Unicode и абзацы | `unicode_tables_fit_width_and_preserve_paragraphs`, `repeated_paragraph_breaks_and_indentation_stay_in_the_cell` |
+| Явный compact с ограниченным превью без разрыва графем | `compact_is_explicit_and_preview_is_bounded` |
+| Изоляция ячеек при ANSI/bidi, поддельных полях и рамке | `untrusted_cells_cannot_forge_structure`, `remote_text_cannot_forge_report_headers_or_metadata_fields` |
+| Цветовые приоритеты, две темы и RGB/256/16 | `color_policy_respects_explicit_choice_and_stream`, `themes_and_depths_style_real_output`, `presentation_flags_are_validated_and_documented` |
+| Спиннер: кадры, очистка после успеха/ошибки/отмены, скрытые потоки | `spinner_animates_real_operation_and_clears_on_success_and_error`, `cancelled_request_drops_spinner_before_final_diagnostic`, `hidden_streams_have_no_animation_or_control_output` (управляемый `TermLike`, без сети) |
+| BrokenPipe и ошибки записи/flush | `broken_pipe_is_success_and_other_output_failures_keep_code_eight`, `output_write_failure_is_not_reported_as_success`, `final_flush_failure_is_not_lost` |
 | Согласованность Rust/MSRV и извлечение Renovate | `cargo_version_and_toolchain_are_canonical_and_synchronized`, `renovate_extracts_only_canonical_msrv_from_actual_manifest` |
 
 ## Отчёт

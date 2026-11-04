@@ -2,7 +2,7 @@ mod common;
 use anketa_scout::{
     Failure,
     application::run,
-    output::{render, safe},
+    output::{Options, render, render_with_options, safe},
 };
 use common::{message, source};
 use tokio_util::sync::CancellationToken;
@@ -62,17 +62,30 @@ async fn plain_redirected_output_has_contacts_origin_text_date_and_attachments()
     .await
     .unwrap();
     let mut bytes = vec![];
-    render(&report, &mut bytes).unwrap();
+    render_with_options(
+        &report,
+        &mut bytes,
+        Options {
+            width: Some(72),
+            ..Options::default()
+        },
+    )
+    .unwrap();
     let text = String::from_utf8(bytes).unwrap();
     for expected in [
-        "Источник: https://2ch.org/test/res/100.html",
-        "Обработано сообщений: 1; анкет: 1",
+        "Источник",
+        "https://2ch.org/test/res/100.html",
+        "Сообщений",
+        "Анкет",
         "пост №101",
         "https://2ch.org/test/res/100.html#101",
-        "Telegram: Тг: synthetic_user",
+        "Telegram",
+        "Тг: synthetic_user",
         "Люблю го.",
-        "Дата: 1970-01-01 00:00:00 UTC",
-        "Вложение: https://2ch.org/test/src/100/file.png",
+        "Дата",
+        "1970-01-01 00:00:00 UTC",
+        "Вложение 1",
+        "https://2ch.org/test/src/100/file.png",
         "2 КиБ",
     ] {
         assert!(text.contains(expected), "Отсутствует {expected}");
@@ -176,29 +189,34 @@ async fn remote_text_cannot_forge_report_headers_or_metadata_fields() {
     .await
     .unwrap();
     let mut output = vec![];
-    render(&report, &mut output).unwrap();
+    render_with_options(
+        &report,
+        &mut output,
+        Options {
+            width: Some(72),
+            ..Options::default()
+        },
+    )
+    .unwrap();
     let text = String::from_utf8(output).unwrap();
-    assert!(text.contains("\n  | Оригинал: подделка\n"));
-    assert!(text.contains("\n  | ── Анкета 999 ──\n"));
-    assert!(text.contains("Дата: Сегодня Оригинал: подделка поле\n"));
-    assert!(text.contains(" · Файл Дата: подделка поле\n"));
-    assert_eq!(
+    assert!(
         text.lines()
-            .filter(|line| line.starts_with("Оригинал:"))
-            .count(),
-        1
+            .any(|line| line.starts_with("│› Оригинал: подделка") && line.ends_with('│'))
     );
-    assert_eq!(
+    assert!(text.contains("\\u{2500}\\u{2500} Анкета 999"));
+    assert!(text.contains("│› Сегодня Оригинал: подделка поле"));
+    assert!(text.contains("│› Имя: Файл Дата: подделка поле"));
+    for label in ["Оригинал", "Дата", "Анкета / пост"] {
+        assert_eq!(
+            text.lines()
+                .filter(|line| line.starts_with(&format!("│  {label} ")))
+                .count(),
+            1
+        );
+    }
+    assert!(
         text.lines()
-            .filter(|line| line.starts_with("Дата:"))
-            .count(),
-        1
-    );
-    assert_eq!(
-        text.lines()
-            .filter(|line| line.starts_with("── Анкета"))
-            .count(),
-        1
+            .all(|line| line.starts_with(['│', '╭', '╰', '╞']) && !line.contains('┆'))
     );
     assert!(!text.contains('\t'));
 }

@@ -33,6 +33,9 @@ fn invalid_arguments_have_russian_safe_diagnostics_and_code_two() {
         vec!["--unknown=private"],
         vec!["--config"],
         vec!["https://example.invalid/?token=private"],
+        vec!["--view", "private"],
+        vec!["--color", "private"],
+        vec!["--theme", "private"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_anketa-scout"))
             .args(args)
@@ -45,6 +48,68 @@ fn invalid_arguments_have_russian_safe_diagnostics_and_code_two() {
         assert!(!error.contains("private"));
         assert!(!error.contains('\u{1b}'));
     }
+}
+
+#[test]
+fn presentation_flags_are_validated_and_documented() {
+    let help = Command::new(env!("CARGO_BIN_EXE_anketa-scout"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    let text = String::from_utf8(help.stdout).unwrap();
+    for flag in [
+        "--view",
+        "--color",
+        "--no-color",
+        "--theme",
+        "compact",
+        "full",
+        "auto",
+        "always",
+        "never",
+        "light",
+        "dark",
+    ] {
+        assert!(text.contains(flag));
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("missing.toml");
+    for (flags, colored) in [
+        (vec!["--color", "auto"], false),
+        (vec!["--color", "never"], false),
+        (vec!["--color", "always"], true),
+        (vec!["--color", "always", "--no-color"], false),
+        (vec!["--view", "compact", "--theme", "light"], false),
+        (vec!["--view", "full", "--theme", "dark"], false),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_anketa-scout"))
+            .args(flags)
+            .arg("--config")
+            .arg(&config)
+            .env("NO_COLOR", "1")
+            .env("TERM", "dumb")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(error.contains('\u{1b}'), colored);
+        assert!(!error.contains("Получение треда"));
+        assert!(!error.contains('\r'));
+    }
+    let rgb = Command::new(env!("CARGO_BIN_EXE_anketa-scout"))
+        .args(["--color", "always", "--theme", "light", "--config"])
+        .arg(&config)
+        .env("NO_COLOR", "1")
+        .env("COLORTERM", "truecolor")
+        .output()
+        .unwrap();
+    assert_eq!(rgb.status.code(), Some(2));
+    assert!(
+        String::from_utf8(rgb.stderr)
+            .unwrap()
+            .contains("38;2;170;30;57m")
+    );
 }
 
 #[test]

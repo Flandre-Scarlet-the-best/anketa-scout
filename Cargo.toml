@@ -10,7 +10,10 @@ repository = "https://github.com/Flandre-Scarlet-the-best/anketa-scout"
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 clap = { version = "4", features = ["derive"] }
+comfy-table = { version = "8", default-features = false }
+console = "0.16"
 directories = "6"
+indicatif = "0.18"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
 scraper = "0.29"
