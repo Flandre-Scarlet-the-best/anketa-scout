@@ -3,6 +3,7 @@ language: ru-RU
 early_access: false
 reviews:
   profile: assertive
+  review_status: false
   request_changes_workflow: false
   fail_commit_status: false
   high_level_summary_instructions: >-
