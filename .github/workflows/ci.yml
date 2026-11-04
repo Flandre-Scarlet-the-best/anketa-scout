@@ -2,6 +2,7 @@ name: Проверки Rust
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
