@@ -4,5 +4,5 @@ description: Только явно порученное пользователе
 disable-model-invocation: true
 ---
 
-Прочитай [канонический skill](../../../.agents/skills/scout-coderabbit-review/SKILL.md)
+Прочитай [канонический навык](../../../.agents/skills/scout-coderabbit-review/SKILL.md)
 и выполни его процедуру. Этот файл — только вход Claude Code.

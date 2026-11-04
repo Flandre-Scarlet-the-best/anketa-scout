@@ -1,8 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": [
-    "Обычные обновления, включая major, Rust toolchain и будущие GitHub Actions, объединяются в групповой PR без automerge.",
-    "Replacement, самостоятельный lock-file maintenance и security могут создавать отдельные PR."
+    "Обычные обновления, включая major, набор инструментов Rust и будущие GitHub Actions, объединяются в групповой PR без автоматического слияния.",
+    "Замена зависимостей, самостоятельное обслуживание файлов фиксации зависимостей и обновления безопасности могут создавать отдельные PR."
   ],
   "extends": ["config:best-practices", "group:all"],
   "dependencyDashboard": true,

@@ -22,7 +22,7 @@ Anketa Scout — будущий кроссплатформенный инстр�
 а в остальных местах остаётся ссылка. Контекст — долговременные решения, не журнал
 агента, PR или разового прогона.
 
-Skills Codex находятся в `.agents/skills/`; входы Claude Code — в `.claude/skills/`.
+Навыки Codex находятся в `.agents/skills/`; входы Claude Code — в `.claude/skills/`.
 Процедуру Git/GitHub определяет `scout-git-workflow`, независимое ревью —
 `scout-code-review`, явно порученный CodeRabbit — `scout-coderabbit-review`.
 Порядок подключения и смысловая маршрутизация описаны в индексе.
