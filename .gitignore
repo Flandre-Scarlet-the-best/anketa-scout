@@ -16,6 +16,7 @@
 *.log
 
 # Секреты и локальные параметры.
+/config.toml
 .env
 .env.*
 !.env.example
