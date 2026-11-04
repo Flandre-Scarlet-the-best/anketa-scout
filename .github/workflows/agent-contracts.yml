@@ -1,9 +1,7 @@
-name: Контракты агентов
+name: Контракты агентов (preview)
 
 on:
   pull_request:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
@@ -14,7 +12,7 @@ concurrency:
 
 jobs:
   contracts:
-    name: Агентские контракты
+    name: Агентские контракты (preview)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

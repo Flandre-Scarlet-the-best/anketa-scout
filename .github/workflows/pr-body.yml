@@ -1,4 +1,4 @@
-name: Контракт описания PR
+name: Контракт описания PR (preview)
 
 on:
   pull_request:
@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   body:
-    name: Структура PR
+    name: Структура PR (preview)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

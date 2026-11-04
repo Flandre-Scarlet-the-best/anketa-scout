@@ -1,0 +1,43 @@
+name: Доверенные контракты агентов
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trusted-agent-contracts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+
+jobs:
+  contracts:
+    name: Доверенные агентские контракты
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Получить доверенную базу
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Получить файлы кандидата как данные
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate
+          persist-credentials: false
+      - name: Проверить toolchain и собрать доверенный валидатор
+        run: |
+          rustc --version
+          rustc --edition=2021 trusted/.github/tools/agent_contracts.rs -o "$RUNNER_TEMP/agent-contracts"
+      - name: Выполнить тесты доверенного валидатора
+        run: |
+          rustc --edition=2021 --test trusted/.github/tools/agent_contracts.rs -o "$RUNNER_TEMP/agent-contracts-tests"
+          "$RUNNER_TEMP/agent-contracts-tests"
+      - name: Проверить skills, входы Claude и относительные ссылки
+        run: '"$RUNNER_TEMP/agent-contracts" skills candidate'
