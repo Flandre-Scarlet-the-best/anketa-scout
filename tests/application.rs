@@ -23,7 +23,7 @@ async fn one_post_is_one_profile_and_contacts_are_never_merged() {
     assert_eq!(report.processed, 3);
     assert_eq!(report.profiles.len(), 1);
     assert_eq!(report.profiles[0].message.origin.post, 103);
-    assert_eq!(report.profiles[0].contacts[0].value, "Тг: other_synthetic");
+    assert_eq!(report.profiles[0].contacts[0].value, "@other_synthetic");
 }
 
 #[tokio::test]

@@ -222,13 +222,17 @@ fn walk(
         && let Some(href) = element.attr("href")
     {
         let href = href.trim();
-        if (href.starts_with("https://t.me/")
+        let contact_link = href.starts_with("https://t.me/")
             || href.starts_with("http://t.me/")
             || href.starts_with("https://telegram.me/")
             || href.starts_with("http://telegram.me/")
-            || href.starts_with("mailto:"))
-            && !output[start..].contains(href.trim_start_matches("mailto:"))
-        {
+            || href.starts_with("https://vk.com/")
+            || href.starts_with("https://vk.ru/")
+            || href.starts_with("mailto:");
+        if contact_link && omit_quotes {
+            output.truncate(start);
+            output.push_str(href.trim_start_matches("mailto:"));
+        } else if contact_link && !output[start..].contains(href.trim_start_matches("mailto:")) {
             output.push_str(" (");
             output.push_str(href.trim_start_matches("mailto:"));
             output.push(')');

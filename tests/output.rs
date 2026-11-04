@@ -68,8 +68,12 @@ fn labelled_cells(text: &str) -> Vec<(String, String)> {
             assert_eq!(parts.len(), target.len());
             for (cell, part) in target.iter_mut().zip(parts) {
                 if data {
-                    assert!(part.starts_with("› "), "Нет изолированного маркера ячейки");
-                    cell.push_str(part.strip_prefix("› ").unwrap().trim_end());
+                    if part.trim().is_empty() {
+                        assert!(!part.contains('›'));
+                    } else {
+                        assert!(part.starts_with("› "), "Нет изолированного маркера ячейки");
+                        cell.push_str(part.strip_prefix("› ").unwrap().trim_end());
+                    }
                     cell.push('\n');
                 } else {
                     cell.push_str(part.trim());
@@ -116,6 +120,8 @@ fn full_tables_preserve_all_fields_and_order() {
                     anketa_scout::domain::ContactKind::Telegram => "Telegram",
                     anketa_scout::domain::ContactKind::Discord => "Discord",
                     anketa_scout::domain::ContactKind::Email => "Почта",
+                    anketa_scout::domain::ContactKind::Vk => "VK",
+                    anketa_scout::domain::ContactKind::Unknown => "Платформа неизвестна",
                 };
                 // Контакт должен быть в собственной колонке/поле с типом;
                 // его присутствие только в исходном тексте недостаточно.
@@ -153,7 +159,7 @@ fn full_tables_preserve_all_fields_and_order() {
 #[test]
 fn unicode_tables_fit_width_and_preserve_paragraphs() {
     let report = fixture();
-    for width in [8, 9, 20, 39, 40, 75, 76, 80, 120] {
+    for width in [8, 9, 20, 24, 39, 40, 75, 76, 80, 96, 120] {
         let text = draw(
             &report,
             Options {
@@ -233,7 +239,10 @@ fn compact_is_explicit_and_preview_is_bounded() {
     let preview = data.iter().find(|c| c.starts_with("Люблю го.")).unwrap();
     assert!(console::measure_text_width(&preview.replace('\n', "")) <= 100);
     assert!(!preview.replace("👩‍💻", "").contains(['👩', '\u{200d}', '💻']));
-    assert!(data.iter().any(|c| joined(c).contains("Тг:synthetic_user")));
+    assert!(
+        data.iter()
+            .any(|c| joined(c).contains("Telegram:@synthetic_user"))
+    );
 }
 
 #[test]

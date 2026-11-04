@@ -56,7 +56,7 @@ Rust через штатный rustup на runner. Linux-прогон не до�
 | --- | --- |
 | Полная, короткая анкета, естественная цель, несколько контактов | `full_profile_preserves_own_contact_and_original`, `short_profile_needs_no_demographics_or_at_sign`, `natural_goal_without_search_keyword_is_sufficient`, `multiple_contacts_have_types_and_evidence` |
 | Отсутствие одного из двух признаков, контакт-дополнение | `description_without_contact_is_rejected`, `contact_only_and_invitation_are_not_profiles`, `forgotten_contact_is_not_combined_with_previous_description`, `one_post_is_one_profile_and_contacts_are_never_merged` |
-| Цитаты, шаблоны, реклама, вступление, чужая принадлежность | `quoted_contacts_and_descriptions_do_not_count_as_authored`, `templates_advertising_and_reposts_are_rejected`, `introductory_post_is_never_a_profile`, `ambiguous_mentions_are_not_owned_contacts` |
+| Цитаты, локальная чужая принадлежность, вступление | `quoted_contacts_and_descriptions_do_not_count_as_authored`, `unrelated_words_do_not_decide_classification`, `introductory_post_is_never_a_profile`, `ambiguous_mentions_are_not_owned_contacts` |
 | Формат источника, происхождение, даты, вложения, `null` | `confirmed_json_shape_preserves_origin_date_files_and_raw_body`, `confirmed_null_files_means_no_attachments`, `missing_optional_fields_remain_absent` |
 | Неверный и частичный тред, повтор номера, чужой parent | `invalid_json_and_missing_required_fields_fail_closed`, `partial_count_or_missing_op_is_not_complete`, `wrong_identity_duplicates_and_wrong_parent_are_rejected` |
 | Конфиг: создание, повтор, гонка, явный путь, отсутствие файла | `first_run_creates_default_and_second_run_never_overwrites`, `concurrent_first_runs_read_complete_configuration`, `explicit_path_wins_and_does_not_create_default`, `missing_explicit_path_neither_creates_nor_falls_back` |
@@ -71,7 +71,7 @@ Rust через штатный rustup на runner. Linux-прогон не до�
 | FIFO, подделка служебных полей и пустой ответ без OP | `fifo_config_without_writer_is_rejected_without_blocking` (Unix), `remote_text_cannot_forge_report_headers_or_metadata_fields`, `missing_op_is_partial_even_when_count_is_zero` |
 | Невозможность внешней подмены авторского текста | compile-fail doctest `Message::authored_text` |
 | Полные таблицы, порядок, все контакты, URL и вложения | `full_tables_preserve_all_fields_and_order` |
-| Ширина 8/40/80/120, неизвестная и минимальная геометрия, Unicode и абзацы | `unicode_tables_fit_width_and_preserve_paragraphs`, `repeated_paragraph_breaks_and_indentation_stay_in_the_cell` |
+| Ширина 8/24/40/75/76/80/96/120, неизвестная и минимальная геометрия, Unicode и абзацы | `unicode_tables_fit_width_and_preserve_paragraphs`, `repeated_paragraph_breaks_and_indentation_stay_in_the_cell` |
 | Явный compact с ограниченным превью без разрыва графем | `compact_is_explicit_and_preview_is_bounded` |
 | Изоляция ячеек при ANSI/bidi, поддельных полях и рамке | `untrusted_cells_cannot_forge_structure`, `remote_text_cannot_forge_report_headers_or_metadata_fields` |
 | Цветовые приоритеты, две темы и RGB/256/16 | `color_policy_respects_explicit_choice_and_stream`, `themes_and_depths_style_real_output`, `presentation_flags_are_validated_and_documented` |
@@ -85,3 +85,17 @@ Rust через штатный rustup на runner. Linux-прогон не до�
 фактический результат и предел доказательства. После новых правок повторить
 затронутые проверки. Не объявлять незапущенное успешным, отсутствие CI — зелёным CI,
 а собственную перечитку — независимым ревью. Публикацию проверяет владелец процедуры Git/GitHub.
+
+Контактный контракт: canonical_contacts_are_all_preserved_and_deduplicated,
+local_restoration_operations_precede_validation,
+geography_and_unsupported_instructions_do_not_invent_contacts,
+colloquial_discord_labels_are_not_geography.
+Явно включаемый offline_snapshot_classification использует только локальный
+SCOUT_AUDIT_JSON; для сравнения до/после обязательно сверять SHA-256 снимка.
+Его вывод содержит номера постов и категории, без контактов и тел сообщений.
+Уровни и отсутствие утечек проверяет logging_levels_and_streams_never_expose_remote_content
+в отдельных процессах; logging_probe вызывается этим тестом автоматически.
+Пограничные формы снимка защищены snapshot_restoration_shapes_keep_unknown_platform_explicit,
+literal_instructions_do_not_truncate_invalid_identifiers,
+adjacent_contacts_keep_platform_and_independent_values,
+contact_anchor_caption_does_not_supply_independent_text и multiline_quotes_cannot_become_owned_contacts.

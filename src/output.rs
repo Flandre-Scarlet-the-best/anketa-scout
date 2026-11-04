@@ -109,9 +109,9 @@ fn write_table(
                 } else {
                     roles[index]
                 };
-                // После переноса каждая физическая строка данных получает маркер.
+                // После переноса каждая непустая физическая строка данных получает маркер.
                 // Разделители здесь созданы только таблицей: удалённые уже экранированы.
-                let content = if !header {
+                let content = if !header && !cell.trim().is_empty() {
                     cell.replacen(' ', "›", 1)
                 } else {
                     cell.to_owned()
@@ -249,6 +249,8 @@ pub fn render_with_options(
                     ContactKind::Telegram => "Telegram",
                     ContactKind::Discord => "Discord",
                     ContactKind::Email => "Почта",
+                    ContactKind::Vk => "VK",
+                    ContactKind::Unknown => "Платформа неизвестна",
                 };
                 (kind, cell_text(&contact.value, false))
             })
@@ -362,10 +364,13 @@ mod tests {
         let mut bytes = vec![];
         write_table(&mut bytes, grid, &[Role::Text], Options::default().palette).unwrap();
         let text = String::from_utf8(bytes).unwrap();
-        let lines: Vec<_> = text.lines().filter(|s| s.starts_with("│›")).collect();
+        let lines: Vec<_> = text
+            .lines()
+            .filter(|s| s.starts_with("│") && !s.contains("Текст"))
+            .collect();
         assert!(lines[0].starts_with("│› \u{0338}Первый абзац"));
-        assert_eq!(lines[1].trim_matches(['│', '›', ' ']), "");
-        assert_eq!(lines[2].trim_matches(['│', '›', ' ']), "");
+        assert_eq!(lines[1].trim_matches(['│', ' ']), "");
+        assert_eq!(lines[2].trim_matches(['│', ' ']), "");
         assert!(lines[3].starts_with("│›   Второй абзац"));
     }
 }

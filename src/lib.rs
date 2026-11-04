@@ -1,5 +1,6 @@
 pub mod application;
 pub mod config;
+mod diagnostics;
 pub mod domain;
 pub mod output;
 pub mod progress;
