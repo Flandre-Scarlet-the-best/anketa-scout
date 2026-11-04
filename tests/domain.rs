@@ -12,8 +12,8 @@ fn full_profile_preserves_own_contact_and_original() {
     assert_eq!(profile.contacts[0].kind, ContactKind::Telegram);
     assert_eq!(profile.contacts[0].value, "Telegram: synthetic_user");
     assert_eq!(profile.contacts[0].ownership, Ownership::ExplicitSelf);
-    assert!(profile.message.original.contains("<br>"));
-    assert!(!profile.message.text.contains("<br>"));
+    assert!(profile.message.original().contains("<br>"));
+    assert!(!profile.message.text().contains("<br>"));
 }
 
 #[test]
@@ -164,7 +164,7 @@ fn contact_looking_like_description_does_not_supply_content() {
 fn formatted_contact_link_is_recognized_without_html() {
     let profile = classify(message("<p>Люблю <b>шахматы</b> &amp; го.</p><a href='https://t.me/synthetic_user'>Мой Telegram</a>")).unwrap();
     assert_eq!(profile.contacts[0].value, "https://t.me/synthetic_user");
-    assert!(!profile.message.text.contains("<a"));
+    assert!(!profile.message.text().contains("<a"));
 }
 
 #[test]
@@ -191,4 +191,48 @@ fn resource_links_bots_and_invalid_contact_suffixes_are_rejected() {
     ] {
         assert!(classify(message(text)).is_err(), "{text}");
     }
+}
+
+#[test]
+fn single_quoted_contacts_and_descriptions_are_not_author_evidence() {
+    for input in [
+        "Люблю шахматы. 'Мой Telegram: synthetic_user'",
+        "'Люблю шахматы.' Мой Telegram: synthetic_user",
+        "Люблю шахматы. ‘Мой Telegram: synthetic_user’",
+        "Люблю шахматы. 'Тг: quoted_one' 'Мой Тг: quoted_two'",
+    ] {
+        assert!(classify(message(input)).is_err(), "{input}");
+    }
+    let profile = classify(message(
+        "I love O'Reilly books and don't mind long talks.<br>Telegram: synthetic_user",
+    ))
+    .unwrap();
+    assert_eq!(profile.contacts[0].value, "Telegram: synthetic_user");
+}
+
+#[test]
+fn bare_handle_does_not_establish_contact_platform() {
+    for input in [
+        "Люблю го.<br>@synthetic_user",
+        "Люблю го. Мой @synthetic_user",
+        "Люблю го.<br>Twitter: @synthetic_user",
+    ] {
+        assert!(classify(message(input)).is_err(), "{input}");
+    }
+    assert_eq!(
+        classify(message("Люблю го.<br>Telegram: @synthetic_user"))
+            .unwrap()
+            .contacts[0]
+            .kind,
+        ContactKind::Telegram
+    );
+}
+
+#[test]
+fn hidden_http_telegram_link_remains_a_contact() {
+    let profile = classify(message(
+        "Люблю го.<br><a href='http://t.me/synthetic_user'>Мой Telegram</a>",
+    ))
+    .unwrap();
+    assert_eq!(profile.contacts[0].value, "http://t.me/synthetic_user");
 }

@@ -20,12 +20,33 @@ pub struct Attachment {
 #[derive(Clone, Debug)]
 pub struct Message {
     pub origin: Origin,
-    pub original: String,
-    pub text: String,
-    pub authored_text: String,
+    pub(crate) original: String,
+    pub(crate) text: String,
+    pub(crate) authored_text: String,
     pub date: Option<String>,
     pub attachments: Vec<Attachment>,
     pub introductory: bool,
+}
+
+impl Message {
+    pub fn original(&self) -> &str {
+        &self.original
+    }
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Свидетельства авторства формирует адаптер вместе с исходным и читаемым текстом.
+    ///
+    /// ```compile_fail
+    /// use anketa_scout::domain::Message;
+    /// fn forge(message: &mut Message) {
+    ///     message.authored_text = "Люблю го. Мой Тг: synthetic_user".into();
+    /// }
+    /// ```
+    pub fn authored_text(&self) -> &str {
+        &self.authored_text
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,7 +119,28 @@ static SIGNATURE_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
     )
 });
 static QUOTED_TEXT: LazyLock<Regex> =
-    LazyLock::new(|| re(r#"(?s)"[^"]*"|«[^»]*»|“[^”]*”|`[^`]*`"#));
+    LazyLock::new(|| re(r#"(?s)"[^"]*"|«[^»]*»|“[^”]*”|‘[^’]*’|`[^`]*`"#));
+
+fn exclude_single_quotes(text: &str) -> String {
+    let mut result = String::new();
+    let mut chars = text.chars().peekable();
+    let mut previous = None;
+    let mut quoted = false;
+    while let Some(c) = chars.next() {
+        let word = |c: char| c.is_alphanumeric() || c == '_';
+        if c == '\'' && !quoted && !previous.is_some_and(word) {
+            quoted = true;
+            result.push('\n');
+        } else if c == '\'' && quoted && !chars.peek().copied().is_some_and(word) {
+            quoted = false;
+            result.push('\n');
+        } else if !quoted {
+            result.push(c);
+        }
+        previous = Some(c);
+    }
+    result
+}
 
 pub fn classify(message: Message) -> Result<Profile, Rejection> {
     if message.introductory {
@@ -111,6 +153,7 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
         .collect::<Vec<_>>()
         .join("\n");
     let authored = QUOTED_TEXT.replace_all(&authored, "\n");
+    let authored = exclude_single_quotes(&authored);
     if FOREIGN_OR_TEMPLATE.is_match(&authored) {
         return Err(Rejection::TemplateOrThirdParty);
     }
@@ -121,6 +164,9 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
     }
     let mut contacts = Vec::new();
     for capture in CONTACTS.captures_iter(&authored) {
+        if capture.name("handle").is_some() {
+            continue;
+        }
         let matched = capture.get(0).expect("Совпадение контакта");
         let suffix = &authored[matched.end()..];
         if suffix.starts_with("://")

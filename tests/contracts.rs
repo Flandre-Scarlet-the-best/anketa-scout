@@ -51,6 +51,8 @@ fn error_categories_have_stable_distinct_exit_codes_without_remote_data() {
         (Failure::Partial, 6),
         (Failure::Limit, 7),
         (Failure::Output, 8),
+        (Failure::Signal, 8),
+        (Failure::Cancelled, 130),
     ] {
         assert_eq!(error.code(), code);
         assert!(!error.to_string().is_empty());

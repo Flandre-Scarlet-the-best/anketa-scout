@@ -17,6 +17,8 @@ pub enum Failure {
     Partial,
     Limit,
     Output,
+    Cancelled,
+    Signal,
 }
 
 impl Failure {
@@ -29,6 +31,8 @@ impl Failure {
             Self::Partial => 6,
             Self::Limit => 7,
             Self::Output => 8,
+            Self::Signal => 8,
+            Self::Cancelled => 130,
         }
     }
 }
@@ -48,6 +52,8 @@ impl std::fmt::Display for Failure {
             Self::Partial => "Получен неполный тред; результат не выдан как полный.",
             Self::Limit => "Превышено ограничение размера или количества входных данных.",
             Self::Output => "Не удалось записать результат в stdout.",
+            Self::Cancelled => "Получение отменено пользователем.",
+            Self::Signal => "Не удалось подключить обработку Ctrl+C.",
         })
     }
 }

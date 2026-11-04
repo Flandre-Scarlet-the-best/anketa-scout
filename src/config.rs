@@ -32,15 +32,19 @@ pub fn default_path() -> Result<PathBuf, Failure> {
 pub fn load(explicit: Option<&Path>, default: &Path) -> Result<LoadedConfig, Failure> {
     let path = explicit.unwrap_or(default);
     if explicit.is_none() {
-        match File::open(path) {
+        match fs::metadata(path) {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => create_default(path)?,
             Err(_) => return Err(Failure::Config("Нет доступа к пользовательскому конфигу.")),
         }
     }
-    let file = File::open(path).map_err(|error| {
+    let file = open_regular(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             Failure::Config("Указанный файл конфигурации отсутствует; проверьте --config.")
+        } else if error.kind() == std::io::ErrorKind::InvalidInput {
+            Failure::Config(
+                "Конфигурация должна быть обычным файлом, а не каталогом, каналом или устройством.",
+            )
         } else {
             Failure::Config("Не удалось открыть конфигурацию: проверьте путь и права доступа.")
         }
@@ -64,6 +68,31 @@ pub fn load(explicit: Option<&Path>, default: &Path) -> Result<LoadedConfig, Fai
         path: path.to_path_buf(),
         source: ThreadUrl::parse(&config.sources[0])?,
     })
+}
+
+fn open_regular(path: &Path) -> std::io::Result<File> {
+    if !fs::metadata(path)?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Конфигурация должна быть обычным файлом",
+        ));
+    }
+    // NONBLOCK защищает и от подмены обычного файла на FIFO между metadata и open.
+    #[cfg(unix)]
+    let file = File::from(rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NONBLOCK | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?);
+    #[cfg(not(unix))]
+    let file = File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Конфигурация должна быть обычным файлом",
+        ));
+    }
+    Ok(file)
 }
 
 fn create_default(path: &Path) -> Result<(), Failure> {

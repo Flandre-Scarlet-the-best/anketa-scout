@@ -12,13 +12,18 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 clap = { version = "4", features = ["derive"] }
 directories = "6"
 regex = "1"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "gzip"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
 scraper = "0.29"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 toml = "0.9"
+tokio = { version = "1", features = ["rt", "macros", "signal", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 url = "2"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs"] }
 
 [lints.rust]
 unsafe_code = "forbid"

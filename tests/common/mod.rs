@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use anketa_scout::{
-    domain::{Message, Origin},
-    source::{ThreadUrl, normalize_html},
+    domain::Message,
+    source::{ThreadUrl, normalize},
 };
 use serde_json::{Value, json};
 
@@ -10,22 +10,13 @@ pub fn source() -> ThreadUrl {
 }
 
 pub fn message(html: &str) -> Message {
-    let (text, authored_text) = normalize_html(html).unwrap();
-    Message {
-        origin: Origin {
-            source: "2ch.org".into(),
-            board: "test".into(),
-            thread: 100,
-            post: 101,
-            link: "https://2ch.org/test/res/100.html#101".into(),
-        },
-        original: html.into(),
-        text,
-        authored_text,
-        date: None,
-        attachments: vec![],
-        introductory: false,
-    }
+    normalize(
+        &source(),
+        &serde_json::to_vec(&envelope(vec![post(100, "Вступление"), post(101, html)])).unwrap(),
+    )
+    .unwrap()
+    .pop()
+    .unwrap()
 }
 
 pub fn post(num: u64, comment: &str) -> Value {

@@ -25,9 +25,9 @@ fn confirmed_json_shape_preserves_origin_date_files_and_raw_body() {
     assert_eq!(message.origin.thread, 100);
     assert_eq!(message.origin.post, 101);
     assert_eq!(message.origin.link, "https://2ch.org/test/res/100.html#101");
-    assert_eq!(message.text, "Люблю го & шахматы.\nТг: synthetic_user");
+    assert_eq!(message.text(), "Люблю го & шахматы.\nТг: synthetic_user");
     assert_eq!(
-        message.original,
+        message.original(),
         "Люблю <b>го</b> &amp; шахматы.<br>Тг: synthetic_user"
     );
     assert_eq!(message.date.as_deref(), Some("1970-01-01 00:00:00 UTC"));
@@ -40,12 +40,15 @@ fn confirmed_json_shape_preserves_origin_date_files_and_raw_body() {
 }
 
 #[test]
-fn empty_thread_and_missing_optional_fields_remain_distinct() {
-    assert!(
-        normalize(&source(), &serde_json::to_vec(&envelope(vec![])).unwrap())
-            .unwrap()
-            .is_empty()
+fn missing_op_is_partial_even_when_count_is_zero() {
+    assert_eq!(
+        normalize(&source(), &serde_json::to_vec(&envelope(vec![])).unwrap()).unwrap_err(),
+        Failure::Partial
     );
+}
+
+#[test]
+fn missing_optional_fields_remain_absent() {
     let messages = normalize(
         &source(),
         &serde_json::to_vec(&envelope(vec![post(100, "Текст")])).unwrap(),
@@ -62,7 +65,7 @@ fn confirmed_null_files_means_no_attachments() {
     let messages = normalize(&source(), &serde_json::to_vec(&input).unwrap()).unwrap();
     assert_eq!(messages.len(), 1);
     assert!(messages[0].attachments.is_empty());
-    assert_eq!(messages[0].text, "Текст без вложений");
+    assert_eq!(messages[0].text(), "Текст без вложений");
 }
 
 #[test]
@@ -130,6 +133,9 @@ fn attachment_urls_cannot_change_host_or_escape_board() {
         "/test/src/../secret",
         "/test/src/x?secret=hidden",
         "/other/src/x",
+        "/test/src/%2e%2e/secret",
+        "/test/src/%2E%2E/%2e%2e/secret",
+        "/test/src/.%2e/secret",
     ] {
         let mut input = envelope(vec![post(100, "Текст")]);
         input["threads"][0]["posts"][0]["files"] = json!([{"path":path}]);

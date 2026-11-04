@@ -92,8 +92,9 @@ struct File {
     path: String,
     #[serde(default)]
     displayname: Option<String>,
-    #[serde(default)]
-    size: Option<u64>,
+    // Makaba передаёт приближённый целый размер в КиБ, а не Content-Length в байтах.
+    #[serde(default, rename = "size")]
+    size_kib: Option<u64>,
 }
 
 pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failure> {
@@ -147,13 +148,13 @@ pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failu
                 .expect("Постоянный URL")
                 .join(&file.path)
                 .map_err(|_| Failure::Format)?;
-            if link.host_str() != Some("2ch.org") {
+            if link.host_str() != Some("2ch.org") || !link.path().starts_with(&prefix) {
                 return Err(Failure::Format);
             }
             attachments.push(Attachment {
                 name: file.displayname,
                 link: link.into(),
-                size_kib: file.size,
+                size_kib: file.size_kib,
             });
         }
         let date = post
@@ -177,7 +178,7 @@ pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failu
             introductory: post.num == source.thread,
         });
     }
-    if !messages.is_empty() && !seen.contains(&source.thread) {
+    if !seen.contains(&source.thread) {
         return Err(Failure::Partial);
     }
     Ok(messages)
@@ -222,7 +223,9 @@ fn walk(
     {
         let href = href.trim();
         if (href.starts_with("https://t.me/")
+            || href.starts_with("http://t.me/")
             || href.starts_with("https://telegram.me/")
+            || href.starts_with("http://telegram.me/")
             || href.starts_with("mailto:"))
             && !output[start..].contains(href.trim_start_matches("mailto:"))
         {

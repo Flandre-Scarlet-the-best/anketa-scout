@@ -2,6 +2,8 @@ use crate::{
     Failure,
     domain::{Message, Profile, classify},
 };
+use std::future::Future;
+use tokio_util::sync::CancellationToken;
 
 pub struct Report {
     pub source: String,
@@ -9,17 +11,29 @@ pub struct Report {
     pub profiles: Vec<Profile>,
 }
 
-pub fn run(
+pub async fn run(
     source: String,
-    receive: impl FnOnce() -> Result<Vec<Message>, Failure>,
+    cancellation: &CancellationToken,
+    receive: impl Future<Output = Result<Vec<Message>, Failure>>,
 ) -> Result<Report, Failure> {
-    let messages = receive()?;
+    let messages = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return Err(Failure::Cancelled),
+        messages = receive => messages?,
+    };
+    let processed = messages.len();
+    let mut profiles = Vec::new();
+    for message in messages {
+        if cancellation.is_cancelled() {
+            return Err(Failure::Cancelled);
+        }
+        if let Ok(profile) = classify(message) {
+            profiles.push(profile);
+        }
+    }
     Ok(Report {
         source,
-        processed: messages.len(),
-        profiles: messages
-            .into_iter()
-            .filter_map(|message| classify(message).ok())
-            .collect(),
+        processed,
+        profiles,
     })
 }

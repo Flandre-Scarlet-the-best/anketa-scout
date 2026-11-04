@@ -5,6 +5,7 @@ use std::{
     path::PathBuf,
     process::ExitCode,
 };
+use tokio_util::sync::CancellationToken;
 
 #[derive(Parser)]
 #[command(
@@ -23,7 +24,7 @@ struct Args {
     help: Option<bool>,
 }
 
-fn execute(args: Args) -> Result<(), Failure> {
+async fn execute(args: Args, cancellation: &CancellationToken) -> Result<(), Failure> {
     let default = if args.config.is_none() {
         config::default_path()?
     } else {
@@ -34,9 +35,13 @@ fn execute(args: Args) -> Result<(), Failure> {
         "Конфигурация: {}",
         output::safe(&config.path.display().to_string())
     );
-    let report = application::run(config.source.page(), || {
-        source::normalize(&config.source, &transport::fetch(&config.source)?)
-    })?;
+    let report = application::run(config.source.page(), cancellation, async {
+        source::normalize(
+            &config.source,
+            &transport::fetch(&config.source, cancellation).await?,
+        )
+    })
+    .await?;
     match output::render(&report, io::stdout().lock()) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
@@ -44,7 +49,8 @@ fn execute(args: Args) -> Result<(), Failure> {
     }
 }
 
-fn main() -> ExitCode {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
     let args = match Args::try_parse() {
         Ok(args) => args,
         Err(error)
@@ -71,7 +77,15 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match execute(args) {
+    let cancellation = CancellationToken::new();
+    let result = tokio::select! {
+        result = execute(args, &cancellation) => result,
+        signal = tokio::signal::ctrl_c() => {
+            cancellation.cancel();
+            match signal { Ok(()) => Err(Failure::Cancelled), Err(_) => Err(Failure::Signal) }
+        }
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("Ошибка: {error}");

@@ -140,3 +140,30 @@ fn non_utf8_config_is_rejected_and_kept_unchanged() {
     assert!(failure.to_string().contains("UTF-8"));
     assert_eq!(fs::read(path).unwrap(), [0xff, 0xfe]);
 }
+
+#[cfg(unix)]
+#[test]
+fn fifo_config_without_writer_is_rejected_without_blocking() {
+    use rustix::fs::{CWD, Mode, mkfifoat};
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    mkfifoat(CWD, &path, Mode::RUSR | Mode::WUSR).unwrap();
+    let worker_path = path.clone();
+    let (send, receive) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let failures: Vec<_> = [None, Some(worker_path.as_path())]
+            .into_iter()
+            .map(|explicit| load(explicit, &worker_path).err().unwrap())
+            .collect();
+        send.send(failures).unwrap();
+    });
+    let failures = receive
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("Открытие FIFO не должно блокироваться");
+    worker.join().unwrap();
+    for failure in failures {
+        assert_eq!(failure.code(), 2);
+        assert!(failure.to_string().contains("обычным файлом"));
+    }
+    assert!(!fs::metadata(path).unwrap().is_file());
+}
