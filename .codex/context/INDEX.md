@@ -1,59 +1,37 @@
 # Карта владельцев контекста
 
-После корневого [AGENTS.md](../../AGENTS.md) выбрать документы по области задачи.
-README описывает назначение и текущее состояние, но не дублирует правила разработки.
+После корневого [AGENTS.md](../../AGENTS.md) выбирать документы по области задачи. README — пользовательское описание; ни он, ни PR не подменяют постоянные рабочие контракты.
 
 | Область | Канонический владелец | Когда читать |
 | --- | --- | --- |
-| Предметная модель, зависимости, границы доверия и данных | [ARCHITECTURE.md](ARCHITECTURE.md) | Изменение поведения, адаптеров, хранения или UI |
-| Rust, переносимость разработки и конфигурации | [DEVELOPMENT.md](DEVELOPMENT.md) | Реализация и изменение инструментов |
-| Выбор проверок и доказательства | [VERIFICATION.md](VERIFICATION.md) | Любое изменение перед передачей |
-| SemVer, MSRV и источники версий | [VERSIONING.md](VERSIONING.md) | Изменение поведения, зависимостей или toolchain |
-| Ветка, коммит, отправка изменений, Draft PR и передача | [scout-git-workflow](../../.agents/skills/scout-git-workflow/SKILL.md) | Публикуемая задача, «закоммить», «запушь», «создай PR» |
-| Независимое ревью | [scout-code-review](../../.agents/skills/scout-code-review/SKILL.md) | «Проверь diff», «ревью PR», «найди регрессии» |
-| CodeRabbit | [scout-coderabbit-review](../../.agents/skills/scout-coderabbit-review/SKILL.md) | Только явное поручение запустить CodeRabbit |
+| Предметная модель, источники, границы доверия | [ARCHITECTURE.md](ARCHITECTURE.md) | Изменение поведения, данных, адаптеров, хранения, UI |
+| Rust, переносимость, инструменты | [DEVELOPMENT.md](DEVELOPMENT.md) | Реализация и конфигурация |
+| Проверки, доказательства, обязательные CI | [VERIFICATION.md](VERIFICATION.md) | Любое изменение перед передачей |
+| SemVer, MSRV, Cargo/toolchain | [VERSIONING.md](VERSIONING.md) | Изменение поведения, зависимостей или версии |
+| Публикация, PR, Ready/merge | [scout-git-workflow](../../.agents/skills/scout-git-workflow/SKILL.md) | Commit, push, публикация, сопровождение PR |
+| Независимое ревью | [scout-code-review](../../.agents/skills/scout-code-review/SKILL.md) | Ревью PR/ветки/diff, регрессии |
+| Явное CodeRabbit | [scout-coderabbit-review](../../.agents/skills/scout-coderabbit-review/SKILL.md) | Только явное поручение CodeRabbit |
+| Живая приёмка | [scout-live-testing](../../.agents/skills/scout-live-testing/SKILL.md) | Проверка настоящего CLI, HTTP, терминала и отказов |
+| Производительность | [scout-performance-benchmarking](../../.agents/skills/scout-performance-benchmarking/SKILL.md) | Доказательство ускорения/регрессии |
+| Разработка адаптера | [scout-adapter-development](../../.agents/skills/scout-adapter-development/SKILL.md) | Добавление и изменение источника/формата |
 
-Обычное ревью не означает запуск внешнего сервиса. Проверочная политика принадлежит
-VERIFICATION.md; отдельного дублирующего навыка для неё нет.
+## Границы ответственности
 
-## Обнаружение и явный вызов навыков
+- `AGENTS.md` задаёт лишь инварианты и маршрутизацию; подробная процедура находится у skill и его `references/`.
+- `VERIFICATION.md` выбирает применимые тесты. Skills ревью, Git и приёмки ссылаются на него, не создают второй реестр команд.
+- `scout-git-workflow` — единственный владелец изменяющей Git/GitHub-публикации. CodeRabbit и самостоятельное ревью ему не дублируют push/PR.
+- `scout-live-testing` проверяет фактическую реализацию, `scout-performance-benchmarking` — сопоставимые измерения, `scout-adapter-development` — предметную разработку источников.
+- Не хранить здесь историю итераций агента, временные SHA, приватные снимки, номера PR или дубли процедур.
 
-Codex обнаруживает `.agents/skills/<name>/SKILL.md`. Claude Code обнаруживает
-`.claude/skills/<name>/SKILL.md`; эти обычные файлы содержат только описание входа
-и ссылку на канонический навык. Claude должен прочитать целевой файл перед работой.
-Пути в ссылках разрешаются относительно файла, который их содержит.
-Это не копии процедур и не символические ссылки: клонирование работает при
-`core.symlinks=false` на Windows без режима разработчика.
-Изменять процедуры нужно только в `.agents/skills/`.
-Описания входов поддерживать согласованными с назначением владельца.
+## Обнаружение и явный вызов
 
-CodeRabbit у Codex дополнительно имеет `allow_implicit_invocation: false`,
-у Claude — `disable-model-invocation: true`. Это настройки вызова, а не разрешение
-на внешние действия. Поддерживаемый явный вызов канонического навыка:
+Codex обнаруживает `.agents/skills/<name>/SKILL.md`; Claude Code — обычные файлы `.claude/skills/<name>/SKILL.md` с ссылкой на канонический документ. Это не символические ссылки и работает на Windows с `core.symlinks=false`. При изменении skill синхронизировать описание входа Claude. Проверять все относительные ссылки в CI.
 
-- В Codex CLI или расширении IDE — `$scout-coderabbit-review`; навык также можно
-  выбрать через `/skills` или список после `$`.
-- В Claude Code — `/scout-coderabbit-review` в начале сообщения; вход прочитает
-  каноническую процедуру из `.agents/skills/`.
+CodeRabbit дополнительно имеет `allow_implicit_invocation: false` в `.agents/skills/scout-coderabbit-review/agents/openai.yaml` и `disable-model-invocation: true` во входе Claude. Для Codex явно вызвать `$scout-coderabbit-review`, для Claude — `/scout-coderabbit-review` в начале сообщения, вместе с положительным поручением и областью. Фраза «Запусти CodeRabbit» выражает намерение, но сама по себе не гарантирует подгрузку skill. Упоминание в вопросе или обычное ревью не активируют его.
 
-К вызову добавить положительное поручение запустить CodeRabbit и область ревью.
-Фраза «Запусти CodeRabbit» выражает поручение, но сама по себе не гарантирует
-активацию навыка; использовать явный вызов выше. Обычное «проверь код», загрузка
-навыка или создание конфигурации не разрешают запуск внешнего сервиса.
+Новые skills проверить в новой сессии через `/skills` или `$` в Codex и меню `/` в Claude. Наличие в списке не доказывает фактического исполнения. Официальные источники: [Codex Skills](https://learn.chatgpt.com/docs/build-skills), [Claude Code Skills](https://code.claude.com/docs/en/skills).
 
-Для проверки обнаружения в новой сессии открыть `/skills` или список после `$`
-в Codex и меню `/` в Claude Code; проверить наличие трёх `scout-*` и возможность
-выбора нужного входа без отправки поручения на ревью. Проверка списка не доказывает
-выполнение процедуры или работу естественно-языковой маршрутизации.
+## Происхождение
 
-## Происхождение организации
+Методология разделения владельцев адаптирована из [anki-deck-toolkit](https://github.com/Flandre-Scarlet-the-best/anki-deck-toolkit). Anki-специфичные данные и процессы не переносятся автоматически. Для Scout сохранены применимые инварианты и отдельные сценарии.
 
-У [anki-deck-toolkit](https://github.com/Flandre-Scarlet-the-best/anki-deck-toolkit)
-адаптированы карта владельцев, разделение Git / независимого ревью / CodeRabbit,
-проверка фактического HEAD и публикации. Предметные Anki-правила, программы,
-CI и Linux-процессы не переносились. Референс использует символические ссылки для Claude;
-здесь выбран описанный выше переносимый вход. Настройки пользовательских агентов
-референсу не приписываются.
-
-Первичные справочники: [навыки Codex](https://learn.chatgpt.com/docs/build-skills),
-[навыки Claude Code](https://code.claude.com/docs/en/skills).
