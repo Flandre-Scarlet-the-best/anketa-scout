@@ -1,0 +1,35 @@
+name: Контракты агентов
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-contracts-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  contracts:
+    name: Агентские контракты
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Получить исходники
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Проверить toolchain и собрать валидатор
+        run: |
+          rustc --version
+          rustc --edition=2021 .github/tools/agent_contracts.rs -o "$RUNNER_TEMP/agent-contracts"
+      - name: Выполнить тесты валидатора
+        run: |
+          rustc --edition=2021 --test .github/tools/agent_contracts.rs -o "$RUNNER_TEMP/agent-contracts-tests"
+          "$RUNNER_TEMP/agent-contracts-tests"
+      - name: Проверить навыки, входы Claude и относительные ссылки
+        run: '"$RUNNER_TEMP/agent-contracts" skills .'
+

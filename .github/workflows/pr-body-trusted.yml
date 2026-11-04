@@ -1,0 +1,33 @@
+name: Доверенный контракт описания PR
+
+# Только код из base SHA. Никакие файлы из head PR не исполняются.
+# Внешний PR body читается как данные, токен только read, secrets не нужны.
+# Внимание: GitHub вводит ограничения на pull_request_target в публичных репозиториях.
+# До назначения проверки обязательной подтвердить разрешение данного события в Actions policy.
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  body-trusted:
+    name: Доверенная структура PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Получить доверенные исходники строго из base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Собрать только доверенный валидатор
+        run: rustc --edition=2021 .github/tools/agent_contracts.rs -o "$RUNNER_TEMP/agent-contracts"
+      - name: Проверить описание PR как недоверенные данные
+        env:
+          EVENT_PATH: ${{ github.event_path }}
+        run: |
+          jq -r '.pull_request.body // ""' "$EVENT_PATH" > "$RUNNER_TEMP/pr-body.md"
+          "$RUNNER_TEMP/agent-contracts" pr-body "$RUNNER_TEMP/pr-body.md"
+
