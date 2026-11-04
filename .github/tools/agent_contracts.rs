@@ -128,6 +128,9 @@ fn check_skills(root: &Path) -> Result<(), String> {
         let name = entry.file_name().to_string_lossy().to_string();
         let canonical = dir.join("SKILL.md");
         let wrapper = claude.join(&name).join("SKILL.md");
+        if fs::symlink_metadata(&wrapper).is_ok_and(|m| m.file_type().is_symlink()) {
+            errors.push(format!("{name}: вход Claude не должен быть символической ссылкой"));
+        }
         match read(&canonical).and_then(|t| frontmatter_name(&t)) {
             Ok(declared) if declared == name => {}
             Ok(declared) => errors.push(format!("{name}: name отличается ({declared})")),
@@ -144,7 +147,7 @@ fn check_skills(root: &Path) -> Result<(), String> {
                 if !body.contains(&reference) {
                     errors.push(format!("{name}: вход Claude не указывает канонический skill"));
                 }
-                if name == "scout-coderabbit-review" && !body.contains("disable-model-invocation: true") {
+                if name == "scout-coderabbit-review" && !body.lines().any(|line| line.trim() == "disable-model-invocation: true") {
                     errors.push("CodeRabbit: у Claude разрешён неявный вызов".into());
                 }
             }
@@ -170,7 +173,7 @@ fn check_skills(root: &Path) -> Result<(), String> {
         errors.push("отсутствует каталог входов Claude".into());
     }
     let policy = read(&agents.join("scout-coderabbit-review/agents/openai.yaml"))?;
-    if !policy.contains("allow_implicit_invocation: false") {
+    if !policy.lines().any(|line| line.trim() == "allow_implicit_invocation: false") {
         errors.push("CodeRabbit: у Codex разрешён неявный вызов".into());
     }
     scan_markdown(root, &root.join(".agents"), &mut errors);
@@ -195,28 +198,81 @@ fn check_skills(root: &Path) -> Result<(), String> {
     }
 }
 
+fn strip_comments(mut line: &str, inside: &mut bool) -> String {
+    let mut result = String::new();
+    while !line.is_empty() {
+        if *inside {
+            if let Some(end) = line.find("-->") {
+                line = &line[end + 3..];
+                *inside = false;
+            } else {
+                break;
+            }
+        } else if let Some(start) = line.find("<!--") {
+            result.push_str(&line[..start]);
+            line = &line[start + 4..];
+            *inside = true;
+        } else {
+            result.push_str(line);
+            break;
+        }
+    }
+    result
+}
+
+fn fence_prefix(line: &str) -> Option<(char, usize)> {
+    let indent = line.chars().take_while(|ch| *ch == ' ').count();
+    if indent > 3 {
+        return None;
+    }
+    let remaining = &line[indent..];
+    let marker = remaining.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let count = remaining.chars().take_while(|ch| *ch == marker).count();
+    (count >= 3).then_some((marker, count))
+}
+
 fn check_pr_body(body: &str) -> Result<(), String> {
-    let normalized = body.replace("\r\n", "\n").replace('\r', "\n");
+    let normalized = body.replace("\\r\\n", "\\n").replace('\\r', "\\n");
     if normalized.chars().count() > 10_000 {
         return Err("PR body превышает 10 000 символов".into());
     }
     let mut parts: Vec<(String, String)> = Vec::new();
-    let mut in_fence = false;
+    let mut fence: Option<(char, usize)> = None;
+    let mut inside_comment = false;
     for line in normalized.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fence = !in_fence;
+        if let Some((marker, minimum)) = fence {
+            if let Some((closing_marker, count)) = fence_prefix(line) {
+                if closing_marker == marker
+                    && count >= minimum
+                    && line.trim().chars().all(|ch| ch == marker)
+                {
+                    fence = None;
+                }
+            }
             continue;
         }
-        if in_fence {
+        let visible = strip_comments(line, &mut inside_comment);
+        if let Some(opening) = fence_prefix(&visible) {
+            fence = Some(opening);
             continue;
         }
-        if let Some(title) = trimmed.strip_prefix("## ") {
-            parts.push((title.trim_end_matches('#').trim().to_owned(), String::new()));
-        } else if let Some((_, text)) = parts.last_mut() {
-            text.push_str(line);
-            text.push('\n');
+        let indent = visible.chars().take_while(|ch| *ch == ' ').count();
+        if indent <= 3 {
+            if let Some(title) = visible[indent..].trim_end().strip_prefix("## ") {
+                parts.push((title.trim_end_matches('#').trim().to_owned(), String::new()));
+                continue;
+            }
         }
+        if let Some((_, text)) = parts.last_mut() {
+            text.push_str(&visible);
+            text.push('\\n');
+        }
+    }
+    if fence.is_some() || inside_comment {
+        return Err("PR body содержит незакрытый блок кода или HTML-комментарий".into());
     }
     if parts.len() < REQUIRED_SECTIONS.len() {
         return Err(format!("не хватает разделов PR: {} из {}", parts.len(), REQUIRED_SECTIONS.len()));
@@ -290,6 +346,30 @@ mod tests {
         assert_eq!(frontmatter_name("---\nname: scout-test\ndescription: Тест\n---\nТекст").unwrap(), "scout-test");
         assert!(frontmatter_name("---\nname: scout-test\n---\n").is_err());
     }
+#[test]
+    fn rejects_hidden_comment_heading() {
+        let s = good().replace("## Цель", "<!--\\n## Цель\\n-->\\n## Подмена");
+        assert!(check_pr_body(&s).is_err());
+    }
+    #[test]
+    fn rejects_indented_code_heading() {
+        let s = good().replace("## Цель", "    ## Цель");
+        assert!(check_pr_body(&s).is_err());
+    }
+    #[test]
+    fn rejects_comment_only_content() {
+        let s = good().replace(
+            "## Готовность\\nПодтверждённый результат и реальное ограничение для этого раздела.",
+            "## Готовность\\n<!-- Подтверждённый результат и реальное ограничение для этого раздела. -->"
+        );
+        assert!(check_pr_body(&s).is_err());
+    }
+    #[test]
+    fn accepts_fenced_example_after_required_sections() {
+        let s = format!("{}\\n```md\\n## Не настоящий заголовок\\n```\\n", good());
+        assert!(check_pr_body(&s).is_ok());
+    }
+
     #[test]
     fn finds_markdown_links() {
         assert_eq!(links_in("[Тест](../../file.md#heading)"), vec!["../../file.md#heading"]);
