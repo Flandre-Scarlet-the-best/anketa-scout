@@ -1,0 +1,47 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": [
+    "Обычные обновления, включая major, Rust toolchain и будущие GitHub Actions, объединяются в групповой PR без automerge.",
+    "Replacement, самостоятельный lock-file maintenance и security могут создавать отдельные PR."
+  ],
+  "extends": ["config:best-practices", "group:all"],
+  "dependencyDashboard": true,
+  "dependencyDashboardApproval": false,
+  "dependencyDashboardTitle": "Обновления зависимостей",
+  "automerge": false,
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "prConcurrentLimit": 4,
+  "prHourlyLimit": 2,
+  "commitHourlyLimit": 2,
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "commitMessageAction": "обновить",
+  "commitMessageTopic": "зависимости",
+  "commitMessageExtra": "",
+  "rebaseWhen": "behind-base-branch",
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "dependencyDashboardApproval": false,
+    "prConcurrentLimit": 1
+  },
+  "packageRules": [
+    {
+      "description": "Все обычные обновления одной группой, включая major и pin",
+      "matchPackageNames": ["*"],
+      "groupName": "обычные обновления зависимостей",
+      "groupSlug": "all-dependencies",
+      "separateMajorMinor": false,
+      "separateMinorPatch": false
+    },
+    {
+      "description": "Закреплённый Rust обновляется только опубликованными стабильными релизами",
+      "matchManagers": ["rust-toolchain"],
+      "matchDatasources": ["rust-version"],
+      "allowedVersions": "/^\\d+\\.\\d+\\.\\d+$/",
+      "rangeStrategy": "replace"
+    }
+  ]
+}

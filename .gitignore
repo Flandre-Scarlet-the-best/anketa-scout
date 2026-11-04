@@ -1,0 +1,38 @@
+# Сборка Rust; Cargo.lock приложения должен отслеживаться.
+/target/
+**/target/
+
+# Пользовательские данные и локальные доказательства.
+/data/
+/cache/
+/local/
+/.codex/local/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.log
+
+# Секреты и локальные параметры.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+/.claude/settings.local.json
+
+# Локальное состояние редакторов и ОС.
+/.idea/
+/.vscode/
+*.swp
+*.tmp
+*.bak
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.pdb
+*.ilk
+*.exe
