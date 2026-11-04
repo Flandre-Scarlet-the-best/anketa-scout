@@ -1,6 +1,6 @@
 ---
 name: scout-git-workflow
-description: Ветка, коммит, отправка изменений и Draft PR Anketa Scout с проверкой удалённого HEAD.
+description: Жизненный цикл Git/GitHub Anketa Scout: ветка, commit, push, Draft PR, Ready, явно разрешённый merge и cleanup с подтверждением SHA.
 ---
 
 Прочитай [канонический навык](../../../.agents/skills/scout-git-workflow/SKILL.md)

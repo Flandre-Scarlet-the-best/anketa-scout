@@ -80,7 +80,12 @@ fn links_in(text: &str) -> Vec<String> {
     while let Some(pos) = rest.find("](") {
         rest = &rest[pos + 2..];
         if let Some(end) = rest.find(')') {
-            let target = rest[..end].trim();
+            let raw_target = rest[..end].trim();
+            let target = if let Some(angled) = raw_target.strip_prefix('<') {
+                angled.split_once('>').map(|(target, _)| target).unwrap_or("")
+            } else {
+                raw_target.split_whitespace().next().unwrap_or("")
+            };
             if !target.is_empty() {
                 result.push(target.to_string());
             }
@@ -353,6 +358,17 @@ mod tests {
     }
     #[test]
     fn valid_body() { assert!(check_pr_body(&good()).is_ok()); }
+    #[test]
+    fn parses_markdown_link_destination_without_optional_title() {
+        assert_eq!(
+            links_in("[Правила](references/pr-body.md \"схема\")"),
+            vec!["references/pr-body.md"],
+        );
+        assert_eq!(
+            links_in("[Файл](<references/pr body.md> 'заголовок')"),
+            vec!["references/pr body.md"],
+        );
+    }
     #[test]
     fn rejects_missing_heading() {
         let s = good().replace("## CI", "## Проверки CI");
