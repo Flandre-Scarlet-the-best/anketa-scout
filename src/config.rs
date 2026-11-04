@@ -49,13 +49,15 @@ pub fn load(explicit: Option<&Path>, default: &Path) -> Result<LoadedConfig, Fai
             Failure::Config("Не удалось открыть конфигурацию: проверьте путь и права доступа.")
         }
     })?;
-    let mut content = String::new();
+    let mut bytes = Vec::new();
     file.take(MAX_CONFIG + 1)
-        .read_to_string(&mut content)
-        .map_err(|_| Failure::Config("Не удалось прочитать конфигурацию как UTF-8."))?;
-    if content.len() as u64 > MAX_CONFIG {
+        .read_to_end(&mut bytes)
+        .map_err(|_| Failure::Config("Не удалось прочитать конфигурацию."))?;
+    if bytes.len() as u64 > MAX_CONFIG {
         return Err(Failure::Config("Файл конфигурации превышает 64 КиБ."));
     }
+    let content = String::from_utf8(bytes)
+        .map_err(|_| Failure::Config("Не удалось прочитать конфигурацию как UTF-8."))?;
     let config: Config = toml::from_str(&content).map_err(|_| {
         Failure::Config("Некорректный TOML: ожидается только sources — список URL.")
     })?;

@@ -156,6 +156,15 @@ fn ambiguous_mentions_are_not_owned_contacts() {
 }
 
 #[test]
+fn foreign_contact_qualifiers_require_a_word_boundary() {
+    let profile = classify(message(
+        "Люблю шахматы и хочу что-то лучшее — Тг: synthetic_user",
+    ))
+    .unwrap();
+    assert_eq!(profile.contacts[0].value, "@synthetic_user");
+}
+
+#[test]
 fn contact_looking_like_description_does_not_supply_content() {
     assert_eq!(
         classify(message("Тг: love_books")).unwrap_err(),
@@ -176,6 +185,31 @@ fn labelled_telegram_url_is_not_truncated_to_https_as_username() {
         "Люблю го.<br>Telegram: https://t.me/synthetic_user",
     ))
     .unwrap();
+    assert_eq!(profile.contacts[0].value, "@synthetic_user");
+}
+
+#[test]
+fn contact_urls_are_case_insensitive_and_bound_to_the_host() {
+    let telegram = classify(message(
+        "Люблю го.<br>Telegram: HTTPS://T.ME/Synthetic_User",
+    ))
+    .unwrap();
+    assert_eq!(telegram.contacts[0].kind, ContactKind::Telegram);
+    assert_eq!(telegram.contacts[0].value, "@synthetic_user");
+
+    let vk = classify(message("Люблю книги.<br>Vk.com/id12345")).unwrap();
+    assert_eq!(vk.contacts[0].kind, ContactKind::Vk);
+    assert_eq!(vk.contacts[0].value, "id12345");
+
+    assert_eq!(
+        classify(message("Люблю го.<br>https://great.me/something")).unwrap_err(),
+        Rejection::NoOwnedContact
+    );
+}
+
+#[test]
+fn contact_in_parentheses_keeps_its_own_identifier() {
+    let profile = classify(message("Люблю го (тг: synthetic_user)")).unwrap();
     assert_eq!(profile.contacts[0].value, "@synthetic_user");
 }
 

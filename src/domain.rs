@@ -94,7 +94,7 @@ fn re(pattern: &str) -> Regex {
 static CONTACTS: LazyLock<Regex> = LazyLock::new(|| {
     re(concat!(
         r"(?ix)(?P<email>[a-z0-9.!\#$%&'*+/=?^_~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+)",
-        r"|(?P<url>(?:https?://)?(?:t\.me|telegram\.me|vk\.com|vk\.ru)/[^\s<>]+)",
+        r"|(?P<url>\b(?:https?://)?(?:t\.me|telegram\.me|vk\.com|vk\.ru)/[^\s<>]+)",
         r"|(?P<postfix>[a-z0-9_.\#]{2,32}[\x20\t]+(?:discord|дискорд)\b)",
         r"|(?P<label>\b(?:telegram|телеграмм?|телега|тгшка|тг|tg|discord|дискордик|дискорд|диск|дс|вк|vk)\b[\x20\t]*[:=—-]?[\x20\t]*@?[a-z0-9_][a-z0-9_.\#()/:+~-]*)",
         r"|(?P<handle>@[a-z][a-z0-9_().+~-]*)",
@@ -108,7 +108,7 @@ static LABEL: LazyLock<Regex> = LazyLock::new(|| {
 });
 static FOREIGN: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"(?ix)(?:его|её|ее|чужой|контакт\s+друга|пример|например|смотрю|читаю|мой\s+канал|наш\s+сервер)\s*[:—-]?\s*$",
+        r"(?ix)\b(?:его|её|ее|чужой|контакт\s+друга|пример|например|смотрю|читаю|мой\s+канал|наш\s+сервер)\s*[:—-]?\s*$",
     )
 });
 static DECORATION: LazyLock<Regex> = LazyLock::new(|| {
@@ -172,19 +172,33 @@ fn restore(raw: &str, instruction: &str) -> Option<String> {
 }
 
 fn canonical(kind: ContactKind, raw: &str) -> Option<String> {
-    let raw = raw
-        .trim()
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .trim_start_matches("t.me/")
-        .trim_start_matches("telegram.me/")
-        .trim_start_matches("vk.com/")
-        .trim_start_matches("vk.ru/")
-        .trim_end_matches([',', ';']);
+    let mut raw = raw.trim();
+    for prefix in [
+        "https://",
+        "http://",
+        "t.me/",
+        "telegram.me/",
+        "vk.com/",
+        "vk.ru/",
+    ] {
+        while raw
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        {
+            raw = &raw[prefix.len()..];
+        }
+    }
+    let raw = raw.trim_end_matches([',', ';']);
     let raw = if kind == ContactKind::Discord {
-        raw
-    } else {
+        if raw.contains('(') {
+            raw
+        } else {
+            raw.trim_end_matches(')')
+        }
+    } else if raw.contains('(') {
         raw.trim_end_matches('.')
+    } else {
+        raw.trim_end_matches(['.', ')'])
     };
     let normalized = if kind == ContactKind::Discord && !raw.contains('#') {
         raw.to_ascii_lowercase()
@@ -361,13 +375,17 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
             (ContactKind::Email, m.as_str().to_owned())
         } else if cap.name("url").is_some() {
             let url = m.as_str().trim_end_matches([')', '.', ',']);
-            let (host, path) = url
-                .trim_start_matches("https://")
-                .trim_start_matches("http://")
-                .split_once('/')
-                .unwrap();
+            let lower = url.to_ascii_lowercase();
+            let scheme_len = if lower.starts_with("https://") {
+                "https://".len()
+            } else if lower.starts_with("http://") {
+                "http://".len()
+            } else {
+                0
+            };
+            let (host, path) = url[scheme_len..].split_once('/').unwrap();
             (
-                if host.starts_with("vk.") {
+                if host.to_ascii_lowercase().starts_with("vk.") {
                     ContactKind::Vk
                 } else {
                     ContactKind::Telegram

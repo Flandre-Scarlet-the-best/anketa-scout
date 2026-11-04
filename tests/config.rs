@@ -99,6 +99,16 @@ fn config_size_boundary_is_enforced_without_overwriting() {
 }
 
 #[test]
+fn oversized_multibyte_config_reports_size_before_utf8() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    let content = "я".repeat(MAX_CONFIG as usize / 2 + 1);
+    fs::write(&path, content).unwrap();
+    let failure = load(Some(&path), &path).err().unwrap();
+    assert!(failure.to_string().contains("превышает 64 КиБ."));
+}
+
+#[test]
 fn creation_failure_and_unreadable_path_are_specific_config_errors() {
     let directory = tempfile::tempdir().unwrap();
     let blocker = directory.path().join("file");
