@@ -392,3 +392,14 @@ fn email_restoration_keeps_literal_case() {
     .unwrap();
     assert_eq!(p.contacts[0].value, "LoCal@example.invalid");
 }
+
+#[test]
+fn contact_lists_and_mailto_without_independent_text_are_rejected() {
+    for text in [
+        "mailto:reader@example.invalid",
+        "Тг: @synthetic_one и @synthetic_two",
+        "Почта: a@example.invalid или b@example.invalid",
+    ] {
+        assert_eq!(classify(message(text)).unwrap_err(), Rejection::ContactOnly);
+    }
+}

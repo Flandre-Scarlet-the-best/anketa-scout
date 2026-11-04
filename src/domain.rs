@@ -113,7 +113,7 @@ static FOREIGN: LazyLock<Regex> = LazyLock::new(|| {
 });
 static DECORATION: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"(?ix)\b(?:мой|моя|мои|вот|пишите|сюда|мне|контакт|связь|почта|email|e-mail|telegram|телеграмм?|тг|tg|дискорд|discord|забыл|забыла|добавить|добавлю|к\s+прошлому\s+посту)\b",
+        r"(?ix)\b(?:мой|моя|мои|вот|пишите|сюда|мне|контакт|связь|почта|mailto|email|e-mail|telegram|телеграмм?|тг|tg|дискорд|discord|забыл|забыла|добавить|добавлю|к\s+прошлому\s+посту)\b",
     )
 });
 static INSTRUCTION: LazyLock<Regex> = LazyLock::new(|| {
@@ -491,7 +491,9 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
     }
     let remainder = INSTRUCTION.replace_all(&remainder, "");
     let remainder = DECORATION.replace_all(&remainder, "");
-    if !remainder.chars().any(char::is_alphanumeric) {
+    static CONTACT_LIST: LazyLock<Regex> =
+        LazyLock::new(|| re(r"^[\s\p{P}]*(?:(?:и|или)[\s\p{P}]*)*$"));
+    if CONTACT_LIST.is_match(&remainder) || !remainder.chars().any(char::is_alphanumeric) {
         return Err(Rejection::ContactOnly);
     }
     Ok(Profile { message, contacts })
