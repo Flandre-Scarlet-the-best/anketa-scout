@@ -26,9 +26,27 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Проверить наличие shellcheck
-        # Без shellcheck actionlint молча пропускает скрипты `run:`: отсутствие — отказ.
-        run: shellcheck --version
+      - name: Установить shellcheck
+        # Закреплённый релиз вместо версии из образа runner: одинаковый коммит получает
+        # одинаковый результат. SHA-256 совпадает с digest ассета GitHub Release.
+        # Каталог добавляется в PATH первым, его находит и actionlint для шагов `run:`.
+        env:
+          SHELLCHECK_VERSION: 0.11.0
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          SHELLCHECK_SIZE: 2559196
+        run: |
+          archive="$RUNNER_TEMP/shellcheck.tar.xz"
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          test "$(stat -c %s "$archive")" = "$SHELLCHECK_SIZE"
+          echo "$SHELLCHECK_SHA256  $archive" | sha256sum --check --strict
+          tar -xJf "$archive" -C "$RUNNER_TEMP" "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+          bin="$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}"
+          "$bin/shellcheck" --version | grep -Fqx "version: ${SHELLCHECK_VERSION}"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Проверить, что используется закреплённый shellcheck
+        run: 'shellcheck --version | grep -Fqx "version: 0.11.0"'
 
       - name: Установить actionlint
         # Официальный релиз закреплённой версии; SHA-256 и размер сверены с файлом
@@ -48,35 +66,70 @@ jobs:
 
       - name: Проверить workflow (actionlint)
         env:
-          # Каждая ошибка — аннотация с файлом, строкой и колонкой.
+          # Каждая ошибка — аннотация с файлом, строкой и колонкой. Последовательность
+          # `\n` actionlint сам заменяет переводом строки: одна ошибка — одна строка.
           ACTIONLINT_FORMAT: >-
             {{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}},title=actionlint [{{$err.Kind}}]::{{$err.Message}}\n{{end}}
         run: '"$RUNNER_TEMP/actionlint" -format "$ACTIONLINT_FORMAT"'
 
-      - name: Проверить shell-скрипты (shellcheck)
-        # Скрипт — файл с расширением .sh/.bash или с shebang sh/bash/dash/ksh.
+      - name: Проверить скрипты репозитория
+        # Shell-скрипт — расширение .sh/.bash или shebang sh/bash/dash/ksh; его проверяет
+        # shellcheck. Любой другой shebang (`#!/…`, не атрибут Rust `#![…]`) и
+        # расширения других языков сценариев — отказ, пока для языка не добавлена
+        # проверка в этот workflow вместе с самим скриптом.
         run: |
+          shell_re='^#![[:space:]]*/.*[/ ](ba|da|k)?sh([[:space:]]|$)'
+          shebang_re='^#![[:space:]]*/'
           scripts=()
+          unchecked=()
           while IFS= read -r -d '' file; do
             case "$file" in
-              *.sh|*.bash) scripts+=("$file") ;;
-              *) if head -n 1 -- "$file" | grep -Eq '^#!.*[/ ](ba|da|k)?sh([[:space:]]|$)'; then scripts+=("$file"); fi ;;
+              *.sh|*.bash) scripts+=("$file"); continue ;;
+              *.ps1|*.psm1|*.psd1|*.py|*.pyw|*.bat|*.cmd|*.js|*.mjs|*.cjs|*.ts|*.mts|*.cts|*.rb|*.pl|*.pm|*.php|*.lua|*.zsh|*.fish|*.awk|*.tcl|*.vbs)
+                unchecked+=("$file"); continue ;;
             esac
+            first="$(head -c 256 -- "$file" | tr -d '\000' | head -n 1)"
+            if printf '%s\n' "$first" | grep -Eq "$shell_re"; then
+              scripts+=("$file")
+            elif printf '%s\n' "$first" | grep -Eq "$shebang_re"; then
+              unchecked+=("$file")
+            fi
           done < <(git ls-files -z)
+          # Обе группы отказов сообщаются вместе: shellcheck не прерывает шаг до списка.
+          failed=0
           echo "Shell-скриптов: ${#scripts[@]}"
           if [ "${#scripts[@]}" -gt 0 ]; then
-            shellcheck --external-sources -- "${scripts[@]}"
+            shellcheck --external-sources -- "${scripts[@]}" || failed=1
           fi
-
-      - name: Запретить скрипты без настроенной проверки
-        # Для этих языков проверка ещё не подключена: новый файл требует добавить её
-        # в этот workflow вместе с самим скриптом.
-        run: |
-          unchecked="$(git ls-files -- '*.ps1' '*.psm1' '*.py' '*.bat' '*.cmd')"
-          if [ -n "$unchecked" ]; then
-            while IFS= read -r file; do
-              echo "::error file=$file::Для скрипта не настроена проверка: добавьте её в .github/workflows/scripts.yml"
-            done <<< "$unchecked"
+          for file in "${unchecked[@]}"; do
+            echo "::error file=$file::Для скрипта не настроена проверка: добавьте её в .github/workflows/scripts.yml"
+            failed=1
+          done
+          if [ "$failed" -ne 0 ]; then
             exit 1
           fi
           echo "Скриптов без настроенной проверки нет"
+
+      - name: Запретить непроверяемые сценарии в workflow
+        # actionlint проверяет через shellcheck только `run:` на bash/sh. Шаги с другой
+        # оболочкой (`shell: pwsh`, `python` и т. п.) и встроенный JavaScript
+        # `actions/github-script` им не проверяются, поэтому требуют своей проверки.
+        run: |
+          found=0
+          while IFS= read -r -d '' workflow; do
+            while IFS=: read -r line text; do
+              value="$(printf '%s' "$text" | sed -E 's/^[[:space:]]*shell:[[:space:]]*//; s/[[:space:]]+#.*$//; s/^["'\'']//; s/["'\'']$//')"
+              case "$value" in
+                bash|sh|bash\ *|sh\ *) ;;
+                *) echo "::error file=$workflow,line=$line::Оболочка «$value» не проверяется actionlint: добавьте её проверку в .github/workflows/scripts.yml"; found=1 ;;
+              esac
+            done < <(grep -nE '^[[:space:]]*shell:' -- "$workflow" || true)
+            while IFS=: read -r line _; do
+              echo "::error file=$workflow,line=$line::actions/github-script не проверяется actionlint: добавьте проверку JavaScript в .github/workflows/scripts.yml"
+              found=1
+            done < <(grep -nE 'uses:[[:space:]]*actions/github-script@' -- "$workflow" || true)
+          done < <(git ls-files -z -- '.github/workflows/*.yml' '.github/workflows/*.yaml' '.github/actions/**/action.yml' '.github/actions/**/action.yaml')
+          if [ "$found" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Непроверяемых сценариев в workflow нет"
