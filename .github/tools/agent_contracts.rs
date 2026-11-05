@@ -1,5 +1,5 @@
 //! Детерминированные проверки агентских контрактов и структуры PR без внешних зависимостей.
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -727,16 +727,24 @@ fn html_block_start(line: &str, interrupts_paragraph: bool) -> Option<HtmlBlock>
     (!interrupts_paragraph && single_tag).then_some(HtmlBlock::UntilBlank)
 }
 
-/// Раздел `##` описания PR: `text` включает содержимое code fence (для оценки содержательности),
-/// `prose` — только отображаемый текст вне fence (для полей и таблиц, которые читает человек).
+/// Раздел `##` описания PR: `text` включает содержимое кода для оценки содержательности,
+/// `prose` — обычный Markdown-текст, `raw_chars` — весь исходный объём раздела с заголовком.
 struct Section {
     title: String,
     text: String,
     prose: String,
+    raw_chars: usize,
 }
 
-fn push_line(sections: &mut [Section], line: &str, in_prose: bool) {
+fn add_raw_chars(sections: &mut [Section], raw_chars: usize) {
     if let Some(section) = sections.last_mut() {
+        section.raw_chars += raw_chars;
+    }
+}
+
+fn push_line(sections: &mut [Section], line: &str, in_prose: bool, raw_chars: usize) {
+    if let Some(section) = sections.last_mut() {
+        section.raw_chars += raw_chars;
         section.text.push_str(line);
         section.text.push('\n');
         if in_prose {
@@ -746,13 +754,28 @@ fn push_line(sections: &mut [Section], line: &str, in_prose: bool) {
     }
 }
 
+fn indentation_columns(line: &str) -> usize {
+    let mut columns = 0;
+    for ch in line.chars() {
+        match ch {
+            ' ' => columns += 1,
+            '\t' => columns += 4 - columns % 4,
+            _ => break,
+        }
+    }
+    columns
+}
+
 fn parse_sections(normalized: &str) -> Result<Vec<Section>, String> {
     let mut parts: Vec<Section> = Vec::new();
     let mut fence: Option<(char, usize)> = None;
     let mut inside_comment = false;
     let mut html_block: Option<HtmlBlock> = None;
+    let mut indented_code = false;
     let mut paragraph_open = false;
-    for line in normalized.lines() {
+    for raw_line in normalized.split_inclusive('\n') {
+        let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+        let raw_chars = raw_line.chars().count();
         if let Some((marker, minimum)) = fence {
             let closes_fence = if let Some((closing_marker, count)) = fence_prefix(line) {
                 closing_marker == marker
@@ -763,29 +786,46 @@ fn parse_sections(normalized: &str) -> Result<Vec<Section>, String> {
             };
             if closes_fence {
                 fence = None;
+                add_raw_chars(&mut parts, raw_chars);
             } else {
-                push_line(&mut parts, line, false);
+                push_line(&mut parts, line, false, raw_chars);
             }
             continue;
         }
-        let visible = strip_comments(line, &mut inside_comment);
         if let Some(kind) = html_block {
+            let visible = strip_comments(line, &mut inside_comment);
             match kind {
                 HtmlBlock::UntilBlank if line.trim().is_empty() => html_block = None,
-                HtmlBlock::UntilClose(tag) if line.to_ascii_lowercase().contains(&format!("</{tag}>")) => {
+                HtmlBlock::UntilClose(tag)
+                    if line.to_ascii_lowercase().contains(&format!("</{tag}>")) =>
+                {
                     html_block = None;
                 }
                 _ => {}
             }
-            push_line(&mut parts, &visible, true);
+            push_line(&mut parts, &visible, false, raw_chars);
             paragraph_open = false;
             continue;
         }
+        if indented_code {
+            if line.trim().is_empty() || indentation_columns(line) >= 4 {
+                push_line(&mut parts, line, false, raw_chars);
+                continue;
+            }
+            indented_code = false;
+        }
+        if !paragraph_open && !line.trim().is_empty() && indentation_columns(line) >= 4 {
+            indented_code = true;
+            push_line(&mut parts, line, false, raw_chars);
+            continue;
+        }
+        let visible = strip_comments(line, &mut inside_comment);
         if line.trim().is_empty() {
             paragraph_open = false;
         }
         if let Some(opening) = fence_prefix(&visible) {
             fence = Some(opening);
+            add_raw_chars(&mut parts, raw_chars);
             paragraph_open = false;
             continue;
         }
@@ -794,7 +834,7 @@ fn parse_sections(normalized: &str) -> Result<Vec<Section>, String> {
                 if visible.to_ascii_lowercase().contains(&format!("</{tag}>")));
             html_block = (!closes_on_same_line).then_some(kind);
             paragraph_open = false;
-            push_line(&mut parts, &visible, true);
+            push_line(&mut parts, &visible, false, raw_chars);
             continue;
         }
         let indent = visible.chars().take_while(|ch| *ch == ' ').count();
@@ -804,6 +844,7 @@ fn parse_sections(normalized: &str) -> Result<Vec<Section>, String> {
                     title: title.trim_end_matches('#').trim().to_owned(),
                     text: String::new(),
                     prose: String::new(),
+                    raw_chars,
                 });
                 paragraph_open = false;
                 continue;
@@ -812,7 +853,7 @@ fn parse_sections(normalized: &str) -> Result<Vec<Section>, String> {
         if !visible.trim().is_empty() {
             paragraph_open = true;
         }
-        push_line(&mut parts, &visible, true);
+        push_line(&mut parts, &visible, true, raw_chars);
     }
     if fence.is_some() || inside_comment {
         return Err("PR body содержит незакрытый блок кода или HTML-комментарий".into());
@@ -826,10 +867,23 @@ fn field(line: &str) -> Option<(String, String)> {
     if rest.starts_with('|') {
         return None;
     }
-    if let Some(marker) = rest.chars().next().filter(|ch| matches!(ch, '-' | '*' | '+')) {
+    if let Some(marker) = rest
+        .chars()
+        .next()
+        .filter(|ch| matches!(ch, '-' | '*' | '+'))
+    {
         let after = &rest[marker.len_utf8()..];
         if after.starts_with(char::is_whitespace) {
             rest = after.trim_start();
+        }
+    } else {
+        let digit_count = rest.chars().take_while(char::is_ascii_digit).count();
+        if (1..=9).contains(&digit_count) {
+            let marker = rest.as_bytes()[digit_count];
+            let after_marker = &rest[digit_count + 1..];
+            if matches!(marker, b'.' | b')') && after_marker.starts_with(char::is_whitespace) {
+                rest = after_marker.trim_start();
+            }
         }
     }
     let rest = rest.strip_prefix("**").unwrap_or(rest);
@@ -839,7 +893,10 @@ fn field(line: &str) -> Option<(String, String)> {
         return None;
     }
     let value = value.strip_prefix("**").unwrap_or(value);
-    Some((name.to_owned(), value.trim().trim_matches('*').trim().to_owned()))
+    Some((
+        name.to_owned(),
+        value.trim().trim_matches('*').trim().to_owned(),
+    ))
 }
 
 fn fields(content: &str) -> Vec<(String, String)> {
@@ -910,7 +967,7 @@ fn check_performance(section: &Section) -> Vec<String> {
     let prefix = format!("## {PERFORMANCE}: ");
     let mut errors = Vec::new();
     // Лимиты относятся ко всему разделу вместе с его заголовком.
-    let length = format!("## {PERFORMANCE}\n").chars().count() + section.text.trim().chars().count();
+    let length = section.raw_chars;
     if length > MAX_PERFORMANCE_CHARS {
         errors.push(format!(
             "{prefix}{length} символов, максимум {MAX_PERFORMANCE_CHARS}; сократите отчёт до выводов"
@@ -1004,9 +1061,8 @@ fn check_measured_scenarios(prefix: &str, prose: &str) -> Vec<String> {
 /// Ячейки строки таблицы GFM; `None` — строка не может быть строкой таблицы.
 /// Отступ от четырёх пробелов — код-блок, пустая строка завершает таблицу.
 fn table_row(line: &str) -> Option<Vec<String>> {
-    let indent = line.len() - line.trim_start_matches(' ').len();
     let trimmed = line.trim();
-    if trimmed.is_empty() || indent > 3 {
+    if trimmed.is_empty() || indentation_columns(line) > 3 {
         return None;
     }
     let mut cells = vec![String::new()];
@@ -1038,24 +1094,45 @@ fn is_delimiter_cell(cell: &str) -> bool {
 }
 
 /// Первая ячейка по канону: `<номер> · \`<reviewed HEAD>\` · <режим>`.
-fn is_iteration_cell(cell: &str) -> bool {
+fn iteration_parts(cell: &str) -> Option<(&str, &str, &str)> {
     let parts: Vec<&str> = cell.split('·').map(str::trim).collect();
     let [number, head, mode] = parts.as_slice() else {
-        return false;
+        return None;
     };
-    let number_ok = !number.is_empty() && !number.starts_with('0') && number.chars().all(|ch| ch.is_ascii_digit());
+    let number_ok = !number.is_empty()
+        && !number.starts_with('0')
+        && number.chars().all(|ch| ch.is_ascii_digit());
     let head_ok = head
         .strip_prefix('`')
         .and_then(|rest| rest.strip_suffix('`'))
-        .is_some_and(|sha| (7..=40).contains(&sha.len()) && sha.chars().all(|ch| matches!(ch, '0'..='9' | 'a'..='f')));
-    number_ok && head_ok && CODERABBIT_MODES.contains(mode)
+        .is_some_and(|sha| {
+            (7..=40).contains(&sha.len())
+                && sha.chars().all(|ch| matches!(ch, '0'..='9' | 'a'..='f'))
+        });
+    (number_ok && head_ok && CODERABBIT_MODES.contains(mode)).then_some((number, head, mode))
+}
+
+fn is_iteration_cell(cell: &str) -> bool {
+    iteration_parts(cell).is_some()
 }
 
 fn decision_label(cell: &str) -> Option<&'static str> {
     CODERABBIT_DECISIONS.iter().copied().find(|label| {
         cell.strip_prefix(label)
-            .is_some_and(|rest| !rest.starts_with(|ch: char| ch.is_alphanumeric()))
+            .is_some_and(|rest| !rest.starts_with(|ch: char| ch.is_alphanumeric() || ch == '_'))
     })
+}
+
+fn is_gfm_table_start(lines: &[&str], start: usize) -> bool {
+    let Some(header) = lines.get(start).and_then(|line| table_row(line)) else {
+        return false;
+    };
+    lines
+        .get(start + 1)
+        .and_then(|line| table_row(line))
+        .is_some_and(|delimiter| {
+            delimiter.len() == header.len() && delimiter.iter().all(|cell| is_delimiter_cell(cell))
+        })
 }
 
 /// Одна накопительная таблица GFM: заголовок, разделитель и строки данных подряд —
@@ -1069,15 +1146,18 @@ fn check_coderabbit(section: &Section) -> Vec<String> {
         .map(|(index, _)| index)
         .collect();
     let start = match header.as_slice() {
-        [] => return vec!["в разделе CodeRabbit отсутствует заголовок накопительной таблицы".into()],
+        [] => {
+            return vec!["в разделе CodeRabbit отсутствует заголовок накопительной таблицы".into()]
+        }
         [start] => *start,
         _ => {
             return vec!["в разделе CodeRabbit заголовок накопительной таблицы повторяется: нужна одна таблица".into()];
         }
     };
     let delimiter = lines.get(start + 1).and_then(|line| table_row(line));
-    let delimiter_ok = delimiter
-        .is_some_and(|row| row.len() == CODERABBIT_HEADER.len() && row.iter().all(|cell| is_delimiter_cell(cell)));
+    let delimiter_ok = delimiter.is_some_and(|row| {
+        row.len() == CODERABBIT_HEADER.len() && row.iter().all(|cell| is_delimiter_cell(cell))
+    });
     if !delimiter_ok {
         return vec![format!(
             "в разделе CodeRabbit за заголовком таблицы нет строки-разделителя из {} столбцов: GitHub не соберёт таблицу",
@@ -1085,7 +1165,13 @@ fn check_coderabbit(section: &Section) -> Vec<String> {
         )];
     }
     let mut errors = Vec::new();
+    for table_start in 0..lines.len().saturating_sub(1) {
+        if table_start != start && is_gfm_table_start(&lines, table_start) {
+            errors.push("в разделе CodeRabbit допускается только одна GFM-таблица".into());
+        }
+    }
     let mut completed = false;
+    let mut iterations: BTreeMap<String, (String, String)> = BTreeMap::new();
     let mut end = lines.len();
     for (offset, line) in lines.iter().enumerate().skip(start + 2) {
         let Some(row) = table_row(line) else {
@@ -1108,9 +1194,40 @@ fn check_coderabbit(section: &Section) -> Vec<String> {
             ));
             continue;
         }
+        if let Some((number, head, mode)) = iteration_parts(&row[0]) {
+            let identity = (head.to_owned(), mode.to_owned());
+            if iterations
+                .get(number)
+                .is_some_and(|previous| previous != &identity)
+            {
+                errors.push(format!(
+                    "номер итерации {number} связан с разными reviewed HEAD или режимами"
+                ));
+            } else {
+                iterations.insert(number.to_owned(), identity);
+            }
+        }
         match decision_label(&row[4]) {
-            None => errors.push(format!("строка таблицы CodeRabbit содержит неизвестное решение: {}", line.trim())),
+            None => errors.push(format!(
+                "строка таблицы CodeRabbit содержит неизвестное решение: {}",
+                line.trim()
+            )),
             Some("incomplete") => {}
+            Some("clean") => {
+                let canonical_clean = row[1] == "—"
+                    && row[2] == "—"
+                    && row[3] == "замечаний нет"
+                    && row[4] == "clean"
+                    && row[5] == "—";
+                if !canonical_clean {
+                    errors.push(format!(
+                        "строка clean должна указывать уровень, путь и исправление «—», а влияние «замечаний нет»: {}",
+                        line.trim()
+                    ));
+                } else {
+                    completed = true;
+                }
+            }
             Some(_) => completed = true,
         }
     }
@@ -1171,7 +1288,7 @@ fn check_pr_body(body: &str) -> Result<(), String> {
             errors.extend(check_performance(section));
         } else if section.title == CODERABBIT {
             errors.extend(check_coderabbit(section));
-        } else if section.title.contains("CodeRabbit") {
+        } else if section.title.to_ascii_lowercase().contains("coderabbit") {
             errors.push(format!(
                 "раздел CodeRabbit должен называться «{CODERABBIT}», найден «{}»",
                 section.title
@@ -1272,6 +1389,18 @@ mod tests {
         let bold = "- **Статус:** не измерено\n- **Причина:** изменение не затрагивает горячий путь CLI.\n- **Диагностика:** сопоставимая пара прогонов не снималась.\n- **Доказательство производительности:** отсутствует\n";
         assert_eq!(check_pr_body(&with_performance(bold)), Ok(()));
     }
+
+    #[test]
+    fn accepts_ordered_performance_fields() {
+        let numbered = NOT_MEASURED
+            .lines()
+            .enumerate()
+            .map(|(index, line)| format!("{}. {line}", index + 1))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(check_pr_body(&with_performance(&numbered)), Ok(()));
+        assert_eq!(field("2) **Статус:** не измерено").unwrap().0, "Статус");
+    }
     #[test]
     fn rejects_incomplete_performance_decisions() {
         for content in [
@@ -1308,6 +1437,57 @@ mod tests {
         );
         assert_eq!(check_pr_body(&with_coderabbit(&clean)), Ok(()));
     }
+
+    #[test]
+    fn rejects_conflicting_reviewed_heads_for_the_same_iteration() {
+        let conflict = format!(
+            "{CODERABBIT_TABLE}| 1 · `dd4718f` · deep | minor | `src/input.rs` | Вторая находка | confirmed | `aa91f01` |\n"
+        );
+        assert!(check_pr_body(&with_coderabbit(&conflict))
+            .unwrap_err()
+            .contains("номер итерации 1 связан с разными reviewed HEAD или режимами"));
+
+        let same_iteration = format!(
+            "{CODERABBIT_TABLE}| 1 · `86e4ad1` · simple | minor | `src/input.rs` | Вторая находка | confirmed | `dd4718f` |\n"
+        );
+        assert_eq!(check_pr_body(&with_coderabbit(&same_iteration)), Ok(()));
+    }
+
+    #[test]
+    fn rejects_noncanonical_clean_rows() {
+        let invalid = CODERABBIT_TABLE.replace(
+            "| 1 · `86e4ad1` · simple | minor | `src/output.rs` | Обрезка ячейки | confirmed | `dd4718f` |",
+            "| 1 · `86e4ad1` · simple | minor | `src/output.rs` | Ложная находка | clean | `dd4718f` |",
+        );
+        assert!(check_pr_body(&with_coderabbit(&invalid)).is_err());
+    }
+
+    #[test]
+    fn rejects_decision_labels_with_underscore_suffixes() {
+        let invalid = CODERABBIT_TABLE.replace("| confirmed |", "| confirmed_fake |");
+        assert!(check_pr_body(&with_coderabbit(&invalid))
+            .unwrap_err()
+            .contains("неизвестное решение"));
+    }
+
+    #[test]
+    fn rejects_any_second_gfm_table_in_coderabbit_section() {
+        let extra = format!(
+            "{CODERABBIT_TABLE}\n| Поле | Значение |\n| --- | --- |\n| Дополнение | Не является строкой итерации |\n"
+        );
+        assert!(check_pr_body(&with_coderabbit(&extra))
+            .unwrap_err()
+            .contains("допускается только одна GFM-таблица"));
+    }
+
+    #[test]
+    fn rejects_case_variants_of_coderabbit_heading() {
+        let invalid = with_coderabbit(CODERABBIT_TABLE)
+            .replace("## CodeRabbit review и disposition", "## coderabbit review и disposition");
+        assert!(check_pr_body(&invalid)
+            .unwrap_err()
+            .contains("должен называться"));
+    }
     #[test]
     fn rejects_noncanonical_coderabbit_section() {
         let renamed = format!("{}\n## CodeRabbit\n{CODERABBIT_TABLE}", good());
@@ -1333,6 +1513,7 @@ mod tests {
         assert_eq!(table_row("| a \\| b | c |"), Some(vec!["a \\| b".to_owned(), "c".to_owned()]));
         assert_eq!(table_row("a | b"), Some(vec!["a".to_owned(), "b".to_owned()]));
         assert_eq!(table_row("    | код | блок |"), None);
+        assert_eq!(table_row("\t| код | блок |"), None);
         assert_eq!(table_row("без таблицы"), None);
     }
     #[test]
@@ -1553,6 +1734,47 @@ mod tests {
         assert!(check_pr_body(&hidden).is_err());
         let hidden_pre = good().replace("## Цель", "<pre>\n\n## Цель").replace("## Область изменений", "</pre>\n## Область изменений");
         assert!(check_pr_body(&hidden_pre).is_err());
+    }
+
+    #[test]
+    fn ignores_fields_and_tables_inside_raw_html_blocks() {
+        let hidden_performance = format!("<div>\n{NOT_MEASURED}</div>");
+        assert!(check_pr_body(&with_performance(&hidden_performance)).is_err());
+
+        let hidden_table = format!("<div>\n{CODERABBIT_TABLE}</div>");
+        assert!(check_pr_body(&with_coderabbit(&hidden_table))
+            .unwrap_err()
+            .contains("отсутствует заголовок"));
+    }
+
+    #[test]
+    fn ignores_fields_and_tables_inside_indented_code_blocks() {
+        let numbered = NOT_MEASURED
+            .lines()
+            .map(|line| format!("    {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(check_pr_body(&with_performance(&numbered)).is_err());
+
+        let tabbed_table = CODERABBIT_TABLE
+            .lines()
+            .map(|line| format!("\t{line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(check_pr_body(&with_coderabbit(&tabbed_table))
+            .unwrap_err()
+            .contains("отсутствует заголовок"));
+    }
+
+    #[test]
+    fn counts_fences_and_whitespace_in_performance_section_limit() {
+        let fenced_padding = format!("{NOT_MEASURED}{}", "```\n```\n".repeat(100));
+        let whitespace_padding = format!("{NOT_MEASURED}{}", " ".repeat(700));
+        for content in [fenced_padding, whitespace_padding] {
+            assert!(check_pr_body(&with_performance(&content))
+                .unwrap_err()
+                .contains("краткое решение занимает более 650 символов"));
+        }
     }
     #[test]
     fn accepts_headings_after_closed_html_block_and_inline_html() {
