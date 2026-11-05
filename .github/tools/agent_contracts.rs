@@ -74,6 +74,35 @@ fn frontmatter_has_line(text: &str, expected: &str) -> bool {
     false
 }
 
+fn policy_disables_implicit_invocation(text: &str) -> bool {
+    let mut policy_indent = None;
+    let mut child_indent = None;
+    for line in text.lines() {
+        let uncommented = line.split_once('#').map_or(line, |(before, _)| before);
+        let content = uncommented.trim();
+        if content.is_empty() {
+            continue;
+        }
+        let indent = uncommented.len() - uncommented.trim_start().len();
+        if let Some(base_indent) = policy_indent {
+            if indent <= base_indent {
+                policy_indent = None;
+                child_indent = None;
+            } else {
+                let expected_indent = *child_indent.get_or_insert(indent);
+                if indent == expected_indent && content == "allow_implicit_invocation: false" {
+                    return true;
+                }
+                continue;
+            }
+        }
+        if content == "policy:" {
+            policy_indent = Some(indent);
+        }
+    }
+    false
+}
+
 fn links_in(text: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut rest = text;
@@ -356,7 +385,7 @@ fn check_skills(root: &Path) -> Result<(), String> {
     }
     let policy_path = agents.join("scout-coderabbit-review/agents/openai.yaml");
     if let Some(policy) = read_file_safely(root, &policy_path, &mut errors) {
-        if !policy.lines().any(|line| line.trim() == "allow_implicit_invocation: false") {
+        if !policy_disables_implicit_invocation(&policy) {
             errors.push("CodeRabbit: у Codex разрешён неявный вызов".into());
         }
     }
@@ -644,6 +673,24 @@ mod tests {
         let misplaced = "---\nname: scout-test\ndescription: Тест\n---\nТекст\ndisable-model-invocation: true";
         assert!(frontmatter_has_line(valid, "disable-model-invocation: true"));
         assert!(!frontmatter_has_line(misplaced, "disable-model-invocation: true"));
+    }
+    #[test]
+    fn requires_codex_invocation_policy_inside_policy_mapping() {
+        assert!(policy_disables_implicit_invocation(
+            "policy:\n  allow_implicit_invocation: false\n"
+        ));
+        assert!(policy_disables_implicit_invocation(
+            "interface:\n  display_name: Test\npolicy: # Codex policy\n  allow_implicit_invocation: false\n"
+        ));
+        assert!(!policy_disables_implicit_invocation(
+            "allow_implicit_invocation: false\n"
+        ));
+        assert!(!policy_disables_implicit_invocation(
+            "policy:\n  nested:\n    allow_implicit_invocation: false\n"
+        ));
+        assert!(!policy_disables_implicit_invocation(
+            "policy:\n  allow_implicit_invocation: true\n"
+        ));
     }
     #[test]
     fn allows_additional_sections_between_required_sections() {
