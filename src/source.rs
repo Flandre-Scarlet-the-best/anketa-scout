@@ -13,9 +13,15 @@ pub const MAX_POSTS: usize = 20_000;
 pub const MAX_COMMENT: usize = 128 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Проверенный адрес треда Двача.
+///
+/// ```compile_fail
+/// use anketa_scout::source::ThreadUrl;
+/// let forged = ThreadUrl { board: "../secret".into(), thread: 1 };
+/// ```
 pub struct ThreadUrl {
-    pub board: String,
-    pub thread: u64,
+    board: String,
+    thread: u64,
 }
 
 impl ThreadUrl {
@@ -48,9 +54,90 @@ impl ThreadUrl {
         format!("https://2ch.org/{}/res/{}.html", self.board, self.thread)
     }
 
+    pub fn board(&self) -> &str {
+        &self.board
+    }
+
+    pub fn thread(&self) -> u64 {
+        self.thread
+    }
+
     pub fn endpoint(&self) -> String {
         format!("https://2ch.org/{}/res/{}.json", self.board, self.thread)
     }
+}
+
+fn decode_percent_encoding(bytes: &[u8]) -> Option<Vec<u8>> {
+    fn hex(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = hex(*bytes.get(index + 1)?)?;
+            let low = hex(*bytes.get(index + 2)?)?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    Some(decoded)
+}
+
+fn safe_attachment_path(path: &str, prefix: &str) -> bool {
+    let Some(relative) = path.strip_prefix(prefix) else {
+        return false;
+    };
+    if path.contains(['?', '#', '\\']) {
+        return false;
+    }
+    relative.split('/').all(|segment| {
+        let mut decoded = segment.as_bytes().to_vec();
+        for _ in 0..4 {
+            if matches!(decoded.as_slice(), b"." | b"..")
+                || decoded.contains(&b'/')
+                || decoded.contains(&b'\\')
+            {
+                return false;
+            }
+            let Some(next) = decode_percent_encoding(&decoded) else {
+                return false;
+            };
+            if next == decoded {
+                return true;
+            }
+            decoded = next;
+        }
+        false
+    })
+}
+
+fn contact_href(input: &str) -> Option<String> {
+    let url = Url::parse(input.trim()).ok()?;
+    if url.scheme() == "mailto" {
+        return Some(url.to_string());
+    }
+    if !matches!(url.scheme(), "http" | "https")
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || !matches!(
+            url.host_str(),
+            Some("t.me" | "telegram.me" | "vk.com" | "vk.ru")
+        )
+    {
+        return None;
+    }
+    Some(url.to_string())
 }
 
 #[derive(Deserialize)]
@@ -138,10 +225,7 @@ pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failu
         for file in post.files {
             // Вложения только показываем. Принимаем локальный путь доски, без иных хостов.
             let prefix = format!("/{}/src/", source.board);
-            if !file.path.starts_with(&prefix)
-                || file.path.contains(['?', '#', '\\'])
-                || file.path.split('/').any(|part| part == "..")
-            {
+            if !safe_attachment_path(&file.path, &prefix) {
                 return Err(Failure::Format);
             }
             let link = Url::parse("https://2ch.org")
@@ -219,22 +303,15 @@ fn walk(
         }
     }
     if name == "a"
-        && let Some(href) = element.attr("href")
+        && let Some(href) = element.attr("href").and_then(contact_href)
     {
-        let href = href.trim();
-        let contact_link = href.starts_with("https://t.me/")
-            || href.starts_with("http://t.me/")
-            || href.starts_with("https://telegram.me/")
-            || href.starts_with("http://telegram.me/")
-            || href.starts_with("https://vk.com/")
-            || href.starts_with("https://vk.ru/")
-            || href.starts_with("mailto:");
-        if contact_link && omit_quotes {
+        let address = href.strip_prefix("mailto:").unwrap_or(&href);
+        if omit_quotes {
             output.truncate(start);
-            output.push_str(href.trim_start_matches("mailto:"));
-        } else if contact_link && !output[start..].contains(href.trim_start_matches("mailto:")) {
+            output.push_str(address);
+        } else if !output[start..].contains(address) {
             output.push_str(" (");
-            output.push_str(href.trim_start_matches("mailto:"));
+            output.push_str(address);
             output.push(')');
         }
     }

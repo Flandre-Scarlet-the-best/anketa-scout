@@ -14,7 +14,7 @@ fn first_run_creates_default_and_second_run_never_overwrites() {
     assert_eq!(fs::read_to_string(&path).unwrap(), DEFAULT_CONFIG);
     let own = "# Мои настройки\nsources = [\"https://2ch.org/test/res/100.html\"]\n";
     fs::write(&path, own).unwrap();
-    assert_eq!(load(None, &path).unwrap().source.thread, 100);
+    assert_eq!(load(None, &path).unwrap().source.thread(), 100);
     assert_eq!(fs::read_to_string(path).unwrap(), own);
 }
 
@@ -30,7 +30,7 @@ fn explicit_path_wins_and_does_not_create_default() {
     .unwrap();
     let config = load(Some(&explicit), &default).unwrap();
     assert_eq!(config.path, explicit);
-    assert_eq!(config.source.thread, 100);
+    assert_eq!(config.source.thread(), 100);
     assert!(!default.exists());
 }
 
@@ -131,7 +131,7 @@ fn concurrent_first_runs_read_complete_configuration() {
     let handles: Vec<_> = (0..8)
         .map(|_| {
             let path = path.clone();
-            std::thread::spawn(move || load(None, &path).map(|config| config.source.thread))
+            std::thread::spawn(move || load(None, &path).map(|config| config.source.thread()))
         })
         .collect();
     for handle in handles {

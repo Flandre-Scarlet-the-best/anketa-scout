@@ -22,6 +22,13 @@ pub async fn run(
         _ = cancellation.cancelled() => return Err(Failure::Cancelled),
         messages = receive => messages.inspect_err(|failure| crate::diagnostics::failed(*failure))?,
     };
+    let source_prefix = format!("{source}#");
+    if messages
+        .iter()
+        .any(|message| !message.origin.link.starts_with(&source_prefix))
+    {
+        return Err(Failure::Format);
+    }
     let processed = messages.len();
     let mut profiles = Vec::new();
     let mut reasons = [0; 5];
@@ -50,6 +57,10 @@ pub async fn run(
                 crate::diagnostics::decision(post, Err(reason));
             }
         }
+        tokio::task::yield_now().await;
+    }
+    if cancellation.is_cancelled() {
+        return Err(Failure::Cancelled);
     }
     crate::diagnostics::completed(processed, profiles.len(), reasons);
     Ok(Report {

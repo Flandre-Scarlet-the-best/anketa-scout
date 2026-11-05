@@ -53,15 +53,17 @@ async fn logging_probe() {
         common::message("Секретный текст.<br>Discord: x"),
     ];
     assert_eq!(
-        application::run(String::new(), &cancellation, async { Ok(messages) })
-            .await
-            .unwrap()
-            .profiles
-            .len(),
+        application::run(common::source().page(), &cancellation, async {
+            Ok(messages)
+        })
+        .await
+        .unwrap()
+        .profiles
+        .len(),
         1
     );
     assert!(
-        application::run(String::new(), &cancellation, async {
+        application::run(common::source().page(), &cancellation, async {
             Err(Failure::Network)
         })
         .await

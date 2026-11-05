@@ -47,6 +47,30 @@ async fn failures_propagate_without_becoming_zero_profiles() {
 }
 
 #[tokio::test]
+async fn report_rejects_messages_from_a_different_source() {
+    let other = "https://2ch.org/test/res/200.html".to_owned();
+    let result = run(other, &CancellationToken::new(), async {
+        Ok(vec![message("Люблю го.<br>Тг: synthetic_user")])
+    })
+    .await;
+    assert!(matches!(result, Err(Failure::Format)));
+}
+
+#[tokio::test]
+async fn cancellation_during_classification_is_observed_before_success() {
+    let cancellation = CancellationToken::new();
+    let cancel = cancellation.clone();
+    let cancel_task = tokio::spawn(async move {
+        tokio::task::yield_now().await;
+        cancel.cancel();
+    });
+    let messages = vec![message("Люблю го.<br>Тг: synthetic_user"); 256];
+    let result = run(source().page(), &cancellation, async { Ok(messages) }).await;
+    assert!(matches!(result, Err(Failure::Cancelled)));
+    cancel_task.await.unwrap();
+}
+
+#[tokio::test]
 async fn plain_redirected_output_has_contacts_origin_text_date_and_attachments() {
     let mut profile =
         message("Люблю <b>го</b>.<br>Тг: synthetic_user\u{1b}]0;опасный заголовок\u{07}");

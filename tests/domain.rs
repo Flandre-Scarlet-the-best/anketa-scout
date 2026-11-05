@@ -1,6 +1,9 @@
 mod common;
-use anketa_scout::domain::{ContactKind, Ownership, Rejection, classify};
-use common::message;
+use anketa_scout::{
+    domain::{ContactKind, Ownership, Rejection, classify},
+    source::normalize,
+};
+use common::{envelope, message, post, source};
 
 #[test]
 fn full_profile_preserves_own_contact_and_original() {
@@ -137,8 +140,18 @@ fn unrelated_words_do_not_decide_classification() {
 }
 #[test]
 fn introductory_post_is_never_a_profile() {
-    let mut input = message("Люблю шахматы. Мой Тг: synthetic_user");
-    input.introductory = true;
+    let source = source();
+    let messages = normalize(
+        &source,
+        &serde_json::to_vec(&envelope(vec![
+            post(100, "Люблю шахматы. Мой Тг: synthetic_user"),
+            post(101, "Обычный пост"),
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    let input = messages.into_iter().next().unwrap();
+    assert!(input.is_introductory());
     assert_eq!(classify(input).unwrap_err(), Rejection::Introductory);
 }
 
@@ -214,16 +227,32 @@ fn contact_in_parentheses_keeps_its_own_identifier() {
 }
 
 #[test]
-fn resource_links_bots_and_invalid_contact_suffixes_are_rejected() {
+fn resource_links_and_invalid_contact_suffixes_are_rejected() {
     for text in [
         "Люблю го.<br>Telegram: https://example.invalid/user",
         "Люблю го.<br>Discord: https://discord.gg/synthetic_invite",
         "Люблю го.<br>https://t.me/joinchat/abcdef",
         "Люблю го.<br>https://t.me/synthetic_user/123",
-        "Люблю го.<br>https://t.me/synthetic_bot",
         "Люблю го.<br>Discord: abcdefghijklmnopqrstuvwxyz0123456789",
     ] {
         assert!(classify(message(text)).is_err(), "{text}");
+    }
+}
+
+#[test]
+fn telegram_usernames_are_not_rejected_by_a_bot_suffix_alone() {
+    let profile = classify(message("Люблю го.<br>Telegram: synthetic_bot")).unwrap();
+    assert_eq!(profile.contacts[0].value, "@synthetic_bot");
+}
+
+#[test]
+fn reserved_vk_group_prefixes_are_case_insensitive() {
+    for value in ["club12345", "Club12345", "PUBLIC12345"] {
+        assert_eq!(
+            classify(message(&format!("Люблю книги.<br>VK: {value}"))).unwrap_err(),
+            Rejection::UnresolvedContact,
+            "{value}"
+        );
     }
 }
 
@@ -272,6 +301,22 @@ fn hidden_http_telegram_link_remains_a_contact() {
     ))
     .unwrap();
     assert_eq!(profile.contacts[0].value, "@synthetic_user");
+}
+
+#[test]
+fn hidden_contact_links_accept_mixed_case_hosts_and_http_vk() {
+    let telegram = classify(message(
+        "Люблю го.<br><a href='HTTPS://T.ME/Synthetic_User'>ссылка</a>",
+    ))
+    .unwrap();
+    assert_eq!(telegram.contacts[0].value, "@synthetic_user");
+
+    let vk = classify(message(
+        "Люблю книги.<br><a href='HTTP://VK.COM/id12345'>профиль</a>",
+    ))
+    .unwrap();
+    assert_eq!(vk.contacts[0].kind, ContactKind::Vk);
+    assert_eq!(vk.contacts[0].value, "id12345");
 }
 
 #[test]
@@ -442,4 +487,55 @@ fn contact_lists_and_mailto_without_independent_text_are_rejected() {
     ] {
         assert_eq!(classify(message(text)).unwrap_err(), Rejection::ContactOnly);
     }
+}
+
+#[test]
+fn leading_example_and_private_message_invitation_are_not_profile_text() {
+    assert_eq!(
+        classify(message(
+            "Вот пример анкеты: Люблю шахматы. Telegram: synthetic_user"
+        ))
+        .unwrap_err(),
+        Rejection::ForeignContact
+    );
+    assert_eq!(
+        classify(message("Пишите в ЛС: Telegram: synthetic_user")).unwrap_err(),
+        Rejection::ContactOnly
+    );
+}
+
+#[test]
+fn ascii_description_can_precede_a_contact_on_the_same_line() {
+    let profile = classify(message("I enjoy astronomy Telegram: synthetic_user")).unwrap();
+    assert_eq!(profile.contacts[0].value, "@synthetic_user");
+}
+
+#[test]
+fn invalid_and_foreign_contact_records_do_not_supply_independent_text() {
+    for text in [
+        "Telegram: synthetic_user, VK: Club12345",
+        "Telegram: synthetic_user, Его Тг: foreign_user",
+    ] {
+        assert_eq!(
+            classify(message(text)).unwrap_err(),
+            Rejection::ContactOnly,
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn many_adjacent_contacts_are_all_preserved() {
+    let mut text = String::from("Люблю го.<br>Мой Telegram: synthetic0000");
+    for index in 1..1_000 {
+        text.push_str(&format!(", @synthetic{index:04}"));
+    }
+    let profile = classify(message(&text)).unwrap();
+    assert_eq!(profile.contacts.len(), 1_000);
+    assert!(
+        profile
+            .contacts
+            .iter()
+            .all(|contact| contact.ownership == Ownership::ExplicitSelf)
+    );
 }

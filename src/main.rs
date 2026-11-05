@@ -87,18 +87,52 @@ async fn execute(
         source::normalize(&config.source, &bytes)
     })
     .await?;
-    output_result(output::render_with_options(
-        &report,
-        io::stdout().lock(),
-        options,
-    ))
+    let render_cancellation = cancellation.clone();
+    tokio::task::spawn_blocking(move || {
+        let stdout = io::stdout();
+        let writer = CancellableWriter {
+            inner: stdout.lock(),
+            cancellation: render_cancellation.clone(),
+        };
+        output_result(
+            output::render_with_options(&report, writer, options),
+            &render_cancellation,
+        )
+    })
+    .await
+    .map_err(|_| Failure::Output)?
 }
 
-fn output_result(result: io::Result<()>) -> Result<(), Failure> {
+struct CancellableWriter<W> {
+    inner: W,
+    cancellation: CancellationToken,
+}
+
+impl<W: Write> Write for CancellableWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.cancellation.is_cancelled() {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        self.inner.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.cancellation.is_cancelled() {
+            return Err(io::ErrorKind::Interrupted.into());
+        }
+        self.inner.flush()
+    }
+}
+
+fn output_result(result: io::Result<()>, cancellation: &CancellationToken) -> Result<(), Failure> {
     match result {
-        Ok(()) => Ok(()),
+        Ok(()) if !cancellation.is_cancelled() => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::Interrupted && cancellation.is_cancelled() => {
+            Err(Failure::Cancelled)
+        }
         Err(_) => Err(Failure::Output),
+        Ok(()) => Err(Failure::Cancelled),
     }
 }
 
@@ -162,12 +196,31 @@ mod tests {
 
     #[test]
     fn broken_pipe_is_success_and_other_output_failures_keep_code_eight() {
-        assert!(output_result(Err(io::ErrorKind::BrokenPipe.into())).is_ok());
+        let cancellation = CancellationToken::new();
+        assert!(output_result(Err(io::ErrorKind::BrokenPipe.into()), &cancellation).is_ok());
         assert_eq!(
-            output_result(Err(io::ErrorKind::PermissionDenied.into())),
+            output_result(Err(io::ErrorKind::PermissionDenied.into()), &cancellation),
             Err(Failure::Output)
         );
         assert_eq!(Failure::Output.code(), 8);
         assert_eq!(Failure::Cancelled.code(), 130);
+    }
+
+    #[test]
+    fn cancelled_writer_stops_rendering() {
+        let cancellation = CancellationToken::new();
+        let mut writer = CancellableWriter {
+            inner: Vec::new(),
+            cancellation: cancellation.clone(),
+        };
+        cancellation.cancel();
+        assert_eq!(
+            writer.write(b"result").unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert_eq!(
+            output_result(Err(io::ErrorKind::Interrupted.into()), &cancellation),
+            Err(Failure::Cancelled)
+        );
     }
 }
