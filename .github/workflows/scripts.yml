@@ -1,0 +1,82 @@
+name: Проверка скриптов и workflow
+
+# Исполнитель правила VERIFICATION.md: каждый скрипт не на Rust проверяется.
+# actionlint проверяет семантику workflow и через shellcheck — скрипты шагов `run:`;
+# отдельно shellcheck проверяет отслеживаемые shell-скрипты.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scripts-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: Скрипты и workflow (actionlint, shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Получить исходники
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Проверить наличие shellcheck
+        # Без shellcheck actionlint молча пропускает скрипты `run:`: отсутствие — отказ.
+        run: shellcheck --version
+
+      - name: Установить actionlint
+        # Официальный релиз закреплённой версии; SHA-256 и размер сверены с файлом
+        # checksums релиза. Версию, сумму и размер обновлять вместе.
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          ACTIONLINT_SIZE: 2353908
+        run: |
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 --output "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          test "$(stat -c %s "$archive")" = "$ACTIONLINT_SIZE"
+          echo "$ACTIONLINT_SHA256  $archive" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -version
+
+      - name: Проверить workflow (actionlint)
+        env:
+          # Каждая ошибка — аннотация с файлом, строкой и колонкой.
+          ACTIONLINT_FORMAT: >-
+            {{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}},title=actionlint [{{$err.Kind}}]::{{$err.Message}}\n{{end}}
+        run: '"$RUNNER_TEMP/actionlint" -format "$ACTIONLINT_FORMAT"'
+
+      - name: Проверить shell-скрипты (shellcheck)
+        # Скрипт — файл с расширением .sh/.bash или с shebang sh/bash/dash/ksh.
+        run: |
+          scripts=()
+          while IFS= read -r -d '' file; do
+            case "$file" in
+              *.sh|*.bash) scripts+=("$file") ;;
+              *) if head -n 1 -- "$file" | grep -Eq '^#!.*[/ ](ba|da|k)?sh([[:space:]]|$)'; then scripts+=("$file"); fi ;;
+            esac
+          done < <(git ls-files -z)
+          echo "Shell-скриптов: ${#scripts[@]}"
+          if [ "${#scripts[@]}" -gt 0 ]; then
+            shellcheck --external-sources -- "${scripts[@]}"
+          fi
+
+      - name: Запретить скрипты без настроенной проверки
+        # Для этих языков проверка ещё не подключена: новый файл требует добавить её
+        # в этот workflow вместе с самим скриптом.
+        run: |
+          unchecked="$(git ls-files -- '*.ps1' '*.psm1' '*.py' '*.bat' '*.cmd')"
+          if [ -n "$unchecked" ]; then
+            while IFS= read -r file; do
+              echo "::error file=$file::Для скрипта не настроена проверка: добавьте её в .github/workflows/scripts.yml"
+            done <<< "$unchecked"
+            exit 1
+          fi
+          echo "Скриптов без настроенной проверки нет"
