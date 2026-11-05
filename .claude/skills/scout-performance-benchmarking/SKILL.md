@@ -1,6 +1,6 @@
 ---
 name: scout-performance-benchmarking
-description: Сопоставимые бенчмарки и доказательства изменений времени, CPU и RAM Anketa Scout.
+description: Воспроизводимые измерения производительности Anketa Scout: гипотеза, сопоставимая база до изменения, измерение после, время/CPU/RAM и доказательства регрессий. Не применяется к обычной правке без вопроса об эффективности.
 ---
 
 Прочитай [канонический навык](../../../.agents/skills/scout-performance-benchmarking/SKILL.md)

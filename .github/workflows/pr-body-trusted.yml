@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: trusted-pr-body-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   body-trusted:
     name: Доверенная структура PR
