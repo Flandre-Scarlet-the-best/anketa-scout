@@ -1,0 +1,72 @@
+name: Проверки Rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux — формат, Clippy, тесты и сборка
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Получить исходники
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Проверить формат
+        run: cargo fmt --all -- --check
+      - name: Проверить Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Выполнить тесты
+        run: cargo test --locked --all-features
+      - name: Собрать приложение
+        run: cargo build --locked --release
+      - name: Проверить справку
+        run: cargo run --locked --release -- --help
+      - name: Проверить версию
+        run: cargo run --locked --release -- --version
+
+  windows:
+    name: Windows — нативная регрессия
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Получить исходники
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Выполнить тесты
+        run: cargo test --locked --all-features
+      - name: Собрать приложение
+        run: cargo build --locked
+      - name: Проверить справку
+        run: cargo run --locked -- --help
+      - name: Проверить версию
+        run: cargo run --locked -- --version
+
+  macos:
+    name: macOS — сборка и базовый CLI
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - name: Получить исходники
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Собрать приложение
+        run: cargo build --locked
+      - name: Проверить CLI и контракты версий
+        run: cargo test --locked --test cli --test contracts
+      - name: Проверить справку
+        run: cargo run --locked -- --help
+      - name: Проверить версию
+        run: cargo run --locked -- --version

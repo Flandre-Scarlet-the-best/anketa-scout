@@ -1,7 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": [
-    "Обычные обновления, включая major, набор инструментов Rust и будущие GitHub Actions, объединяются в групповой PR без автоматического слияния.",
+    "Обычные обновления, включая major, зависимости Cargo, набор инструментов Rust и GitHub Actions, объединяются в групповой PR без автоматического слияния.",
     "Замена зависимостей, самостоятельное обслуживание файлов фиксации зависимостей и обновления безопасности могут создавать отдельные PR."
   ],
   "extends": ["config:best-practices", "group:all"],
@@ -14,7 +14,6 @@
   },
   "prConcurrentLimit": 4,
   "prHourlyLimit": 2,
-  "commitHourlyLimit": 2,
   "semanticCommits": "enabled",
   "semanticCommitType": "chore",
   "semanticCommitScope": "deps",
@@ -22,6 +21,17 @@
   "commitMessageTopic": "зависимости",
   "commitMessageExtra": "",
   "rebaseWhen": "behind-base-branch",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Каноническая MSRV корневого Cargo.toml; встроенный Cargo manager не извлекает rust-version",
+      "managerFilePatterns": ["/^Cargo\\.toml$/"],
+      "matchStrings": ["(?:^|\\n)rust-version = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""],
+      "depNameTemplate": "rust",
+      "datasourceTemplate": "rust-version",
+      "versioningTemplate": "rust-release-channel"
+    }
+  ],
   "vulnerabilityAlerts": {
     "enabled": true,
     "dependencyDashboardApproval": false,
@@ -38,7 +48,6 @@
     },
     {
       "description": "Закреплённый Rust обновляется только опубликованными стабильными релизами",
-      "matchManagers": ["rust-toolchain"],
       "matchDatasources": ["rust-version"],
       "allowedVersions": "/^\\d+\\.\\d+\\.\\d+$/",
       "rangeStrategy": "replace"
