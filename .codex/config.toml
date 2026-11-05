@@ -1,0 +1,25 @@
+# Эти плагины остаются включёнными глобально, но отключаются в Anketa Scout.
+[plugins."dotnet@dotnet-agent-skills"]
+enabled = false
+
+[plugins."dotnet-advanced@dotnet-agent-skills"]
+enabled = false
+
+[plugins."dotnet-test@dotnet-agent-skills"]
+enabled = false
+
+[plugins."dotnet-msbuild@dotnet-agent-skills"]
+enabled = false
+
+[plugins."dotnet-diag@dotnet-agent-skills"]
+enabled = false
+
+[plugins."microsoft-docs@microsoftdocs-local"]
+enabled = false
+
+[plugins."windbg@win-dev-skills"]
+enabled = false
+
+# Пакет включает C/C++-агенты и Rust/Golang-skills; здесь отключается целиком.
+[plugins."systems-programming@claude-code-workflows"]
+enabled = false
