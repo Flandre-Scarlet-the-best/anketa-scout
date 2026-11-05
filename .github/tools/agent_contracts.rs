@@ -22,99 +22,263 @@ fn read(path: &Path) -> Result<String, String> {
     fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn frontmatter_name(text: &str) -> Result<String, String> {
+/// Ключ YAML-отображения, значение в его строке и все последующие вложенные строки.
+struct YamlEntry {
+    key: String,
+    value: String,
+    continuation: Vec<String>,
+}
+
+fn is_yaml_noise(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.is_empty() || trimmed.starts_with('#')
+}
+
+fn line_indent(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
+
+/// Разбирает одно блочное YAML-отображение с отступом `indent`. Всё, что не укладывается
+/// в простое подмножество (повторы ключей, кавычки в ключах, строки вне отображения), — ошибка:
+/// проверка контрактов должна отказывать, а не угадывать смысл.
+fn yaml_mapping<'a>(
+    lines: impl IntoIterator<Item = &'a str>,
+    indent: usize,
+) -> Result<Vec<YamlEntry>, String> {
+    let mut entries: Vec<YamlEntry> = Vec::new();
+    for line in lines {
+        if is_yaml_noise(line) || line_indent(line) > indent || line.starts_with('\t') {
+            match entries.last_mut() {
+                Some(entry) => entry.continuation.push(line.to_owned()),
+                None if is_yaml_noise(line) => {}
+                None => return Err(format!("вложенная строка до первого ключа: {line}")),
+            }
+            continue;
+        }
+        if line_indent(line) < indent {
+            return Err(format!("нарушен отступ YAML: {line}"));
+        }
+        let content = &line[indent..];
+        let Some((key, value)) = content.split_once(':') else {
+            return Err(format!("неподдерживаемая строка YAML: {line}"));
+        };
+        if key.is_empty()
+            || !key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+            || !(value.is_empty() || value.starts_with([' ', '\t']))
+        {
+            return Err(format!("неподдерживаемый ключ YAML: {line}"));
+        }
+        if entries.iter().any(|entry| entry.key == key) {
+            return Err(format!("дублируется {key}"));
+        }
+        entries.push(YamlEntry { key: key.to_owned(), value: value.trim().to_owned(), continuation: Vec::new() });
+    }
+    Ok(entries)
+}
+
+fn frontmatter_entries(text: &str) -> Result<Vec<YamlEntry>, String> {
     let mut lines = text.lines();
     if lines.next() != Some("---") {
         return Err("отсутствует начальный YAML frontmatter".into());
     }
-    let mut name = None;
-    let mut description = None;
-    let mut closed = false;
-    for line in lines {
-        if line.trim() == "---" {
-            closed = true;
-            break;
-        }
-        if let Some(value) = line.strip_prefix("name:") {
-            if name.replace(value.trim().to_string()).is_some() {
-                return Err("дублируется name".into());
-            }
-        }
-        if let Some(value) = line.strip_prefix("description:") {
-            if description.replace(value.trim().to_string()).is_some() {
-                return Err("дублируется description".into());
-            }
-        }
-    }
-    if !closed {
+    let body: Vec<&str> = lines.by_ref().take_while(|line| line.trim_end() != "---").collect();
+    if text.lines().skip(1 + body.len()).next().is_none() {
         return Err("не закрыт YAML frontmatter".into());
     }
-    let name = name.ok_or("нет name")?;
-    if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-') {
-        return Err("недопустимое name".into());
-    }
-    if description.is_none_or(|value| value.is_empty() || value == "TODO") {
-        return Err("пустое description".into());
-    }
-    Ok(name)
+    yaml_mapping(body, 0)
 }
 
-fn frontmatter_has_line(text: &str, expected: &str) -> bool {
-    let mut lines = text.lines();
-    if lines.next() != Some("---") {
-        return false;
+fn without_plain_comment(value: &str) -> &str {
+    if value.starts_with('#') {
+        return "";
     }
-    let mut found = false;
-    for line in lines {
-        if line.trim() == "---" {
-            return found;
+    value.find(" #").map_or(value, |pos| &value[..pos]).trim()
+}
+
+/// Простой скаляр без кавычек, блоков и вложенных строк; иначе `None`.
+fn plain_scalar(entry: &YamlEntry) -> Option<&str> {
+    let value = without_plain_comment(&entry.value);
+    let simple = !value.is_empty()
+        && !value.starts_with(['"', '\'', '|', '>', '{', '[', '&', '*', '!'])
+        && entry.continuation.iter().all(|line| is_yaml_noise(line));
+    simple.then_some(value)
+}
+
+/// Текстовое значение скаляра: снимает кавычки и собирает блочные и многострочные значения.
+fn scalar_text(entry: &YamlEntry) -> String {
+    let value = entry.value.as_str();
+    let continued = || {
+        entry.continuation.iter()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    if let Some(quoted) = value.strip_prefix('"') {
+        let mut result = String::new();
+        let mut chars = quoted.chars();
+        while let Some(ch) = chars.next() {
+            match ch {
+                '"' => return result,
+                '\\' => result.extend(chars.next()),
+                _ => result.push(ch),
+            }
         }
-        found |= line.trim() == expected;
+        return result;
     }
-    false
+    if let Some(quoted) = value.strip_prefix('\'') {
+        let mut result = String::new();
+        let mut chars = quoted.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch != '\'' {
+                result.push(ch);
+            } else if chars.next_if_eq(&'\'').is_some() {
+                result.push('\'');
+            } else {
+                break;
+            }
+        }
+        return result;
+    }
+    if value.starts_with(['|', '>']) {
+        return continued();
+    }
+    let plain = without_plain_comment(value);
+    if plain.is_empty() {
+        continued()
+    } else {
+        format!("{plain} {}", continued()).trim().to_owned()
+    }
+}
+
+fn frontmatter_name(text: &str) -> Result<String, String> {
+    let entries = frontmatter_entries(text)?;
+    let find = |key: &str| entries.iter().find(|entry| entry.key == key);
+    let name = find("name").and_then(plain_scalar).ok_or("нет name")?;
+    if !name.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-') {
+        return Err("недопустимое name".into());
+    }
+    let description = find("description").map(scalar_text).unwrap_or_default();
+    if description.trim().is_empty() || description.trim() == "TODO" {
+        return Err("пустое description".into());
+    }
+    Ok(name.to_owned())
+}
+
+/// Верхнеуровневый ключ frontmatter существует и равен простому скаляру `expected`.
+fn frontmatter_flag(text: &str, key: &str, expected: &str) -> bool {
+    frontmatter_entries(text).is_ok_and(|entries| {
+        entries.iter()
+            .find(|entry| entry.key == key)
+            .and_then(plain_scalar)
+            .is_some_and(|value| value == expected)
+    })
 }
 
 fn policy_disables_implicit_invocation(text: &str) -> bool {
-    let mut policy_indent = None;
-    let mut child_indent = None;
+    let Ok(root) = yaml_mapping(text.lines(), 0) else {
+        return false;
+    };
+    let Some(policy) = root.iter().find(|entry| entry.key == "policy") else {
+        return false;
+    };
+    if !without_plain_comment(&policy.value).is_empty() {
+        return false;
+    }
+    let Some(child_indent) = policy.continuation.iter()
+        .find(|line| !is_yaml_noise(line))
+        .map(|line| line_indent(line))
+        .filter(|indent| *indent > 0)
+    else {
+        return false;
+    };
+    let Ok(children) = yaml_mapping(policy.continuation.iter().map(String::as_str), child_indent) else {
+        return false;
+    };
+    children.iter()
+        .find(|entry| entry.key == "allow_implicit_invocation")
+        .and_then(plain_scalar)
+        .is_some_and(|value| value == "false")
+}
+
+/// Текст Markdown без блоков кода, встроенного кода и HTML-комментариев: примеры не являются ссылками.
+fn markdown_prose(text: &str) -> String {
+    let mut without_blocks = String::new();
+    let mut fence: Option<(char, usize)> = None;
+    let mut inside_comment = false;
     for line in text.lines() {
-        let uncommented = line.split_once('#').map_or(line, |(before, _)| before);
-        let content = uncommented.trim();
-        if content.is_empty() {
+        if let Some((marker, minimum)) = fence {
+            if fence_prefix(line).is_some_and(|(closing, count)| {
+                closing == marker && count >= minimum && line.trim().chars().all(|ch| ch == marker)
+            }) {
+                fence = None;
+            }
             continue;
         }
-        let indent = uncommented.len() - uncommented.trim_start().len();
-        if let Some(base_indent) = policy_indent {
-            if indent <= base_indent {
-                policy_indent = None;
-                child_indent = None;
-            } else {
-                let expected_indent = *child_indent.get_or_insert(indent);
-                if indent == expected_indent && content == "allow_implicit_invocation: false" {
-                    return true;
-                }
-                continue;
+        let visible = strip_comments(line, &mut inside_comment);
+        if let Some(opening) = fence_prefix(&visible) {
+            fence = Some(opening);
+            continue;
+        }
+        without_blocks.push_str(&visible);
+        without_blocks.push('\n');
+    }
+
+    let mut result = String::new();
+    let mut rest = without_blocks.as_str();
+    while let Some(start) = rest.find('`') {
+        result.push_str(&rest[..start]);
+        let run = rest[start..].chars().take_while(|ch| *ch == '`').count();
+        let after = &rest[start + run..];
+        let closing = (0..after.len())
+            .filter(|pos| after.is_char_boundary(*pos) && after[*pos..].starts_with(&"`".repeat(run)))
+            .find(|pos| {
+                !after[..*pos].ends_with('`') && !after[*pos + run..].starts_with('`')
+            });
+        match closing {
+            Some(end) => {
+                result.push(' ');
+                rest = &after[end + run..];
+            }
+            None => {
+                result.push_str(&rest[start..start + run]);
+                rest = after;
             }
         }
-        if content == "policy:" {
-            policy_indent = Some(indent);
-        }
     }
-    false
+    result.push_str(rest);
+    result
+}
+
+fn link_destination(raw_target: &str) -> &str {
+    let raw_target = raw_target.trim();
+    if let Some(angled) = raw_target.strip_prefix('<') {
+        angled.split_once('>').map(|(target, _)| target).unwrap_or("")
+    } else {
+        raw_target.split_whitespace().next().unwrap_or("")
+    }
 }
 
 fn links_in(text: &str) -> Vec<String> {
+    let prose = markdown_prose(text);
     let mut result = Vec::new();
-    let mut rest = text;
+    for line in prose.lines() {
+        let indent = line.chars().take_while(|ch| *ch == ' ').count();
+        if indent > 3 || !line[indent..].starts_with('[') {
+            continue;
+        }
+        if let Some((label, destination)) = line[indent + 1..].split_once("]:") {
+            let target = link_destination(destination);
+            if !label.trim().is_empty() && !label.contains(']') && !target.is_empty() {
+                result.push(target.to_string());
+            }
+        }
+    }
+    let mut rest = prose.as_str();
     while let Some(pos) = rest.find("](") {
         rest = &rest[pos + 2..];
         if let Some(end) = rest.find(')') {
-            let raw_target = rest[..end].trim();
-            let target = if let Some(angled) = raw_target.strip_prefix('<') {
-                angled.split_once('>').map(|(target, _)| target).unwrap_or("")
-            } else {
-                raw_target.split_whitespace().next().unwrap_or("")
-            };
+            let target = link_destination(&rest[..end]);
             if !target.is_empty() {
                 result.push(target.to_string());
             }
@@ -251,12 +415,57 @@ fn check_markdown_target(
             errors.push(format!("абсолютная ссылка: {} -> {target}", source_path.display()));
         }
         MarkdownTarget::Local(target) => {
-            let dest = source_path.parent().unwrap_or(root).join(target);
-            if !dest.exists() {
-                errors.push(format!("битая ссылка: {} -> {target}", source_path.display()));
+            let base = source.parent().unwrap_or(Path::new(""));
+            match local_target_within(root, &base.join(target)) {
+                LocalTarget::Exists => {}
+                LocalTarget::Missing => {
+                    errors.push(format!("битая ссылка: {} -> {target}", source_path.display()));
+                }
+                LocalTarget::Outside => {
+                    errors.push(format!("ссылка за пределы репозитория: {} -> {target}", source_path.display()));
+                }
+                LocalTarget::Symlink => {
+                    errors.push(format!("ссылка через символическую ссылку: {} -> {target}", source_path.display()));
+                }
             }
         }
     }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum LocalTarget {
+    Exists,
+    Missing,
+    Outside,
+    Symlink,
+}
+
+/// Лексически нормализует путь относительно корня копии и проверяет существование
+/// без выхода за корень и без следования символическим ссылкам.
+fn local_target_within(root: &Path, relative: &Path) -> LocalTarget {
+    let mut parts: Vec<&std::ffi::OsStr> = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if parts.pop().is_none() {
+                    return LocalTarget::Outside;
+                }
+            }
+            Component::Normal(name) => parts.push(name),
+            Component::RootDir | Component::Prefix(_) => return LocalTarget::Outside,
+        }
+    }
+    let mut path = root.to_path_buf();
+    for name in parts {
+        path.push(name);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return LocalTarget::Symlink,
+            Ok(_) => {}
+            Err(_) => return LocalTarget::Missing,
+        }
+    }
+    LocalTarget::Exists
 }
 
 fn scan_markdown(root: &Path, folder: &Path, errors: &mut Vec<String>) {
@@ -346,7 +555,7 @@ fn check_skills(root: &Path) -> Result<(), String> {
                 errors.push(format!("{name}: вход Claude не указывает канонический skill"));
             }
             if name == "scout-coderabbit-review"
-                && !frontmatter_has_line(&body, "disable-model-invocation: true")
+                && !frontmatter_flag(&body, "disable-model-invocation", "true")
             {
                 errors.push("CodeRabbit: у Claude разрешён неявный вызов".into());
             }
@@ -442,6 +651,56 @@ fn fence_prefix(line: &str) -> Option<(char, usize)> {
     (count >= 3).then_some((marker, count))
 }
 
+/// Имена тегов HTML-блоков CommonMark типа 6: могут прерывать абзац и закрываются пустой строкой.
+const HTML_BLOCK_TAGS: &[&str] = &[
+    "address", "article", "aside", "base", "basefont", "blockquote", "body", "caption",
+    "center", "col", "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt",
+    "fieldset", "figcaption", "figure", "footer", "form", "frame", "frameset", "h1", "h2",
+    "h3", "h4", "h5", "h6", "head", "header", "hr", "html", "iframe", "legend", "li", "link",
+    "main", "menu", "menuitem", "nav", "noframes", "ol", "optgroup", "option", "p", "param",
+    "search", "section", "summary", "table", "tbody", "td", "tfoot", "th", "thead", "title",
+    "tr", "track", "ul",
+];
+/// Теги HTML-блоков CommonMark типа 1: закрываются строкой с соответствующим закрывающим тегом.
+const HTML_RAW_TAGS: &[&str] = &["pre", "script", "style", "textarea"];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HtmlBlock {
+    UntilBlank,
+    UntilClose(&'static str),
+}
+
+/// Начало сырого HTML-блока: внутри него строки `##` отображаются как текст, а не заголовки.
+fn html_block_start(line: &str, interrupts_paragraph: bool) -> Option<HtmlBlock> {
+    let indent = line.chars().take_while(|ch| *ch == ' ').count();
+    if indent > 3 {
+        return None;
+    }
+    let tag = line[indent..].strip_prefix('<')?;
+    let closing = tag.starts_with('/');
+    let tag = tag.strip_prefix('/').unwrap_or(tag);
+    let name_len = tag.chars().take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-').count();
+    if name_len == 0 || !tag.starts_with(|ch: char| ch.is_ascii_alphabetic()) {
+        return None;
+    }
+    let name = tag[..name_len].to_ascii_lowercase();
+    let after = &tag[name_len..];
+    if !closing {
+        if let Some(raw) = HTML_RAW_TAGS.iter().find(|raw| **raw == name) {
+            if after.is_empty() || after.starts_with([' ', '\t', '>']) {
+                return Some(HtmlBlock::UntilClose(raw));
+            }
+        }
+    }
+    let type6_boundary = after.is_empty() || after.starts_with([' ', '\t', '>']) || after.starts_with("/>");
+    if HTML_BLOCK_TAGS.contains(&name.as_str()) && type6_boundary {
+        return Some(HtmlBlock::UntilBlank);
+    }
+    // Тип 7: полный открывающий или закрывающий тег один в строке, не прерывающий абзац.
+    let single_tag = line.trim_end().find('>').is_some_and(|end| end + 1 == line.trim_end().len());
+    (!interrupts_paragraph && single_tag).then_some(HtmlBlock::UntilBlank)
+}
+
 fn check_pr_body(body: &str) -> Result<(), String> {
     let normalized = body.replace("\r\n", "\n").replace('\r', "\n");
     if normalized.chars().count() > 10_000 {
@@ -450,6 +709,8 @@ fn check_pr_body(body: &str) -> Result<(), String> {
     let mut parts: Vec<(String, String)> = Vec::new();
     let mut fence: Option<(char, usize)> = None;
     let mut inside_comment = false;
+    let mut html_block: Option<HtmlBlock> = None;
+    let mut paragraph_open = false;
     for line in normalized.lines() {
         if let Some((marker, minimum)) = fence {
             let closes_fence = if let Some((closing_marker, count)) = fence_prefix(line) {
@@ -468,16 +729,50 @@ fn check_pr_body(body: &str) -> Result<(), String> {
             continue;
         }
         let visible = strip_comments(line, &mut inside_comment);
+        if let Some(kind) = html_block {
+            match kind {
+                HtmlBlock::UntilBlank if line.trim().is_empty() => html_block = None,
+                HtmlBlock::UntilClose(tag) if line.to_ascii_lowercase().contains(&format!("</{tag}>")) => {
+                    html_block = None;
+                }
+                _ => {}
+            }
+            if let Some((_, text)) = parts.last_mut() {
+                text.push_str(&visible);
+                text.push('\n');
+            }
+            paragraph_open = false;
+            continue;
+        }
+        if line.trim().is_empty() {
+            paragraph_open = false;
+        }
         if let Some(opening) = fence_prefix(&visible) {
             fence = Some(opening);
+            paragraph_open = false;
+            continue;
+        }
+        if let Some(kind) = html_block_start(&visible, paragraph_open) {
+            let closes_on_same_line = matches!(kind, HtmlBlock::UntilClose(tag)
+                if visible.to_ascii_lowercase().contains(&format!("</{tag}>")));
+            html_block = (!closes_on_same_line).then_some(kind);
+            paragraph_open = false;
+            if let Some((_, text)) = parts.last_mut() {
+                text.push_str(&visible);
+                text.push('\n');
+            }
             continue;
         }
         let indent = visible.chars().take_while(|ch| *ch == ' ').count();
         if indent <= 3 {
             if let Some(title) = visible[indent..].trim_end().strip_prefix("## ") {
                 parts.push((title.trim_end_matches('#').trim().to_owned(), String::new()));
+                paragraph_open = false;
                 continue;
             }
+        }
+        if !visible.trim().is_empty() {
+            paragraph_open = true;
         }
         if let Some((_, text)) = parts.last_mut() {
             text.push_str(&visible);
@@ -668,11 +963,95 @@ mod tests {
         assert!(frontmatter_name("---\nname: scout-test\n---\n").is_err());
     }
     #[test]
+    fn rejects_empty_quoted_and_block_descriptions() {
+        for description in ["\"\"", "''", "\"  \"", "|", ">-\n  ", "# комментарий", "\"TODO\""] {
+            let text = format!("---\nname: scout-test\ndescription: {description}\n---\n");
+            assert!(frontmatter_name(&text).is_err(), "{description}");
+        }
+        for description in ["\"Тест\"", "'Это ''тест'''", "|\n  Многострочное\n  описание", "Тест: с двоеточием"] {
+            let text = format!("---\nname: scout-test\ndescription: {description}\n---\n");
+            assert_eq!(frontmatter_name(&text).unwrap(), "scout-test", "{description}");
+        }
+        assert!(frontmatter_name("---\nname: scout-test\ndescription: Тест\nname: other\n---\n").is_err());
+    }
+    #[test]
     fn checks_claude_invocation_flag_only_in_frontmatter() {
         let valid = "---\nname: scout-test\ndescription: Тест\ndisable-model-invocation: true\n---\nТекст";
         let misplaced = "---\nname: scout-test\ndescription: Тест\n---\nТекст\ndisable-model-invocation: true";
-        assert!(frontmatter_has_line(valid, "disable-model-invocation: true"));
-        assert!(!frontmatter_has_line(misplaced, "disable-model-invocation: true"));
+        assert!(frontmatter_flag(valid, "disable-model-invocation", "true"));
+        assert!(!frontmatter_flag(misplaced, "disable-model-invocation", "true"));
+    }
+    #[test]
+    fn ignores_decoy_claude_invocation_flags() {
+        for decoy in [
+            "---\nname: scout-test\ndescription: |\n  disable-model-invocation: true\n---\n",
+            "---\nname: scout-test\ndescription: Тест\nmetadata:\n  disable-model-invocation: true\n---\n",
+            "---\nname: scout-test\ndescription: Тест\ndisable-model-invocation: true\ndisable-model-invocation: false\n---\n",
+            "---\nname: scout-test\ndescription: Тест\ndisable-model-invocation: \"true\"\n---\n",
+        ] {
+            assert!(!frontmatter_flag(decoy, "disable-model-invocation", "true"), "{decoy}");
+        }
+    }
+    #[test]
+    fn ignores_decoy_codex_invocation_policies() {
+        for decoy in [
+            "interface:\n  description: |\n    policy:\n      allow_implicit_invocation: false\n",
+            "policy:\n  allow_implicit_invocation: false\npolicy:\n  allow_implicit_invocation: true\n",
+            "policy:\n  allow_implicit_invocation: false\n  allow_implicit_invocation: true\n",
+            "policy:\n  note: |\n    allow_implicit_invocation: false\n  allow_implicit_invocation: true\n",
+            "policy: {allow_implicit_invocation: false}\n",
+        ] {
+            assert!(!policy_disables_implicit_invocation(decoy), "{decoy}");
+        }
+    }
+    #[test]
+    fn rejects_links_escaping_checkout() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let parent = std::env::temp_dir().join(format!("anketa-scout-escape-{}-{unique}", process::id()));
+        let root = parent.join("checkout");
+        fs::create_dir_all(root.join(".agents")).unwrap();
+        fs::write(parent.join("outside.md"), "вне копии").unwrap();
+        fs::write(root.join("inside.md"), "внутри копии").unwrap();
+
+        let mut errors = Vec::new();
+        check_markdown_target(&root, Path::new(".agents/guide.md"), "../../outside.md", &mut errors);
+        check_markdown_target(&root, Path::new("AGENTS.md"), "../outside.md", &mut errors);
+        check_markdown_target(&root, Path::new(".agents/guide.md"), "../inside.md", &mut errors);
+        check_markdown_target(&root, Path::new(".agents/guide.md"), "./../.agents/../inside.md", &mut errors);
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors.iter().all(|error| error.contains("за пределы репозитория")));
+
+        fs::remove_dir_all(parent).unwrap();
+    }
+    #[test]
+    fn ignores_links_inside_code_and_comments() {
+        let text = "Пример:\n```md\n[битая](missing.md)\n```\n`[код](inline.md)` и ``[x](двойной.md)``\n<!-- [скрыто](hidden.md) -->\n[живая](live.md)\n";
+        assert_eq!(links_in(text), vec!["live.md"]);
+    }
+    #[test]
+    fn finds_reference_style_link_definitions() {
+        let text = "См. [правила][pr].\n\n[pr]: references/pr-body.md \"заголовок\"\n   [угловая]: <references/pr body.md>\n";
+        assert_eq!(links_in(text), vec!["references/pr-body.md", "references/pr body.md"]);
+    }
+    #[test]
+    fn rejects_required_headings_inside_raw_html_block() {
+        let hidden = good().replace("## Цель", "<div>\n## Цель");
+        assert!(check_pr_body(&hidden).is_err());
+        let hidden_pre = good().replace("## Цель", "<pre>\n\n## Цель").replace("## Область изменений", "</pre>\n## Область изменений");
+        assert!(check_pr_body(&hidden_pre).is_err());
+    }
+    #[test]
+    fn accepts_headings_after_closed_html_block_and_inline_html() {
+        let details = good().replace("## Цель", "<details>\n<summary>Журнал</summary>\nКратко.\n</details>\n\n## Цель");
+        assert!(check_pr_body(&details).is_ok());
+        let inline = good().replace(
+            "## Область изменений",
+            "Текст абзаца\n<span>встроенный</span>\n## Область изменений",
+        );
+        assert!(check_pr_body(&inline).is_ok());
     }
     #[test]
     fn requires_codex_invocation_policy_inside_policy_mapping() {
