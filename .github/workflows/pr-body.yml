@@ -22,6 +22,9 @@ jobs:
       - name: Проверить опубликованное описание
         env:
           EVENT_PATH: ${{ github.event_path }}
+        # Автор и ветка передаются как данные: исключение для PR dependency-ботов решает валидатор.
         run: |
           jq -j '.pull_request.body // ""' "$EVENT_PATH" > "$RUNNER_TEMP/pr-body.md"
-          "$RUNNER_TEMP/agent-contracts" pr-body "$RUNNER_TEMP/pr-body.md"
+          "$RUNNER_TEMP/agent-contracts" pr-body "$RUNNER_TEMP/pr-body.md" \
+            --author "$(jq -r '.pull_request.user.login // ""' "$EVENT_PATH")" \
+            --head-ref "$(jq -r '.pull_request.head.ref // ""' "$EVENT_PATH")"
