@@ -6,12 +6,9 @@ use std::path::{Component, Path, PathBuf};
 use std::process;
 
 const REQUIRED_SKILLS: &[&str] = &[
-    "scout-adapter-development",
     "scout-code-review",
     "scout-coderabbit-review",
     "scout-git-workflow",
-    "scout-live-testing",
-    "scout-performance-benchmarking",
 ];
 const REQUIRED_SECTIONS: &[&str] = &[
     "Цель", "Область изменений", "Реализация", "Проверки",

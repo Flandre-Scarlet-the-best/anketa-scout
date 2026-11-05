@@ -16,7 +16,7 @@ Anketa Scout — кроссплатформенное Rust CLI-приложен�
 
 1. Прочитать [индекс владельцев](.codex/context/INDEX.md) и выбрать относящиеся к изменению документы, не загружая всё подряд.
 2. Изменять правило только у его канонического владельца: архитектуру — в `ARCHITECTURE.md`, разработку — в `DEVELOPMENT.md`, верификацию — в `VERIFICATION.md`, версии — в `VERSIONING.md`, рабочую процедуру — в соответствующем skill.
-3. Для Git/GitHub использовать `scout-git-workflow`; для независимого ревью — `scout-code-review`; для явно запрошенного внешнего ревью — `scout-coderabbit-review`; для фактической приёмки — `scout-live-testing`; для доказательства изменений производительности — `scout-performance-benchmarking`; для нового сайта/адаптера — `scout-adapter-development`.
+3. Для Git/GitHub использовать `scout-git-workflow`; для независимого ревью — `scout-code-review`; для явно запрошенного внешнего ревью — `scout-coderabbit-review`.
 4. Канонические skills — `.agents/skills/*/SKILL.md`, входы Claude Code — `.claude/skills/*/SKILL.md`. Вход Claude ссылается на канонический skill, не содержит второй копии процедуры.
 5. В конце указать точные изменённые файлы, проверенную ревизию, результаты, ограничения и ссылку на опубликованный Draft PR, когда поручена публикация. Не скрывать неустранённые замечания.
 

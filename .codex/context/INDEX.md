@@ -11,16 +11,12 @@
 | Публикация, PR, Ready/merge | [scout-git-workflow](../../.agents/skills/scout-git-workflow/SKILL.md) | Commit, push, публикация, сопровождение PR |
 | Независимое ревью | [scout-code-review](../../.agents/skills/scout-code-review/SKILL.md) | Ревью PR/ветки/diff, регрессии |
 | Явное CodeRabbit | [scout-coderabbit-review](../../.agents/skills/scout-coderabbit-review/SKILL.md) | Только явное поручение CodeRabbit |
-| Живая приёмка | [scout-live-testing](../../.agents/skills/scout-live-testing/SKILL.md) | Проверка настоящего CLI, HTTP, терминала и отказов |
-| Производительность | [scout-performance-benchmarking](../../.agents/skills/scout-performance-benchmarking/SKILL.md) | Доказательство ускорения/регрессии |
-| Разработка адаптера | [scout-adapter-development](../../.agents/skills/scout-adapter-development/SKILL.md) | Добавление и изменение источника/формата |
 
 ## Границы ответственности
 
 - `AGENTS.md` задаёт лишь инварианты и маршрутизацию; подробная процедура находится у skill и его `references/`.
-- `VERIFICATION.md` выбирает применимые тесты. Skills ревью, Git и приёмки ссылаются на него, не создают второй реестр команд.
+- `VERIFICATION.md` выбирает применимые тесты. Skills ревью и Git ссылаются на него, не создают второй реестр команд.
 - `scout-git-workflow` — единственный владелец изменяющей Git/GitHub-публикации. CodeRabbit и самостоятельное ревью ему не дублируют push/PR.
-- `scout-live-testing` проверяет фактическую реализацию, `scout-performance-benchmarking` — сопоставимые измерения, `scout-adapter-development` — предметную разработку источников.
 - Не хранить здесь историю итераций агента, временные SHA, приватные снимки, номера PR или дубли процедур.
 
 ## Обнаружение и явный вызов
