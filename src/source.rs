@@ -67,7 +67,7 @@ impl ThreadUrl {
     }
 }
 
-fn decode_percent_encoding(bytes: &[u8]) -> Option<Vec<u8>> {
+fn decode_percent_encoding(bytes: &[u8], strict: bool) -> Option<Vec<u8>> {
     fn hex(byte: u8) -> Option<u8> {
         match byte {
             b'0'..=b'9' => Some(byte - b'0'),
@@ -81,10 +81,20 @@ fn decode_percent_encoding(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' {
-            let high = hex(*bytes.get(index + 1)?)?;
-            let low = hex(*bytes.get(index + 2)?)?;
-            decoded.push((high << 4) | low);
-            index += 3;
+            let escape = bytes
+                .get(index + 1)
+                .copied()
+                .and_then(hex)
+                .zip(bytes.get(index + 2).copied().and_then(hex));
+            if let Some((high, low)) = escape {
+                decoded.push((high << 4) | low);
+                index += 3;
+            } else if strict {
+                return None;
+            } else {
+                decoded.push(b'%');
+                index += 1;
+            }
         } else {
             decoded.push(bytes[index]);
             index += 1;
@@ -102,14 +112,14 @@ fn safe_attachment_path(path: &str, prefix: &str) -> bool {
     }
     relative.split('/').all(|segment| {
         let mut decoded = segment.as_bytes().to_vec();
-        for _ in 0..4 {
+        for depth in 0..4 {
             if matches!(decoded.as_slice(), b"." | b"..")
                 || decoded.contains(&b'/')
                 || decoded.contains(&b'\\')
             {
                 return false;
             }
-            let Some(next) = decode_percent_encoding(&decoded) else {
+            let Some(next) = decode_percent_encoding(&decoded, depth == 0) else {
                 return false;
             };
             if next == decoded {
@@ -122,7 +132,7 @@ fn safe_attachment_path(path: &str, prefix: &str) -> bool {
 }
 
 fn contact_href(input: &str) -> Option<String> {
-    let url = Url::parse(input.trim()).ok()?;
+    let mut url = Url::parse(input.trim()).ok()?;
     if url.scheme() == "mailto" {
         return Some(url.to_string());
     }
@@ -137,6 +147,8 @@ fn contact_href(input: &str) -> Option<String> {
     {
         return None;
     }
+    url.set_query(None);
+    url.set_fragment(None);
     Some(url.to_string())
 }
 

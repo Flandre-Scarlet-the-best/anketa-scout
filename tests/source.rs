@@ -131,6 +131,7 @@ fn attachment_urls_cannot_change_host_or_escape_board() {
         "https://evil.invalid/x",
         "//127.0.0.1/x",
         "/test/src/../secret",
+        "/test/src/file%",
         "/test/src/x?secret=hidden",
         "/other/src/x",
         "/test/src/%2e%2e/secret",
@@ -148,6 +149,20 @@ fn attachment_urls_cannot_change_host_or_escape_board() {
             Failure::Format,
             "{path}"
         );
+    }
+}
+
+#[test]
+fn encoded_percent_is_preserved_in_safe_attachment_filenames() {
+    for path in [
+        "/test/src/100/file%25report.png",
+        "/test/src/100/file%25report%20final.png",
+    ] {
+        let mut input = envelope(vec![post(100, "Текст")]);
+        input["threads"][0]["posts"][0]["files"] = json!([{"path":path}]);
+        let messages = normalize(&source(), &serde_json::to_vec(&input).unwrap()).unwrap();
+        assert_eq!(messages[0].attachments.len(), 1, "{path}");
+        assert!(messages[0].attachments[0].link.contains("%25report"));
     }
 }
 

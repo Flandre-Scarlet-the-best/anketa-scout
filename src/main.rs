@@ -88,7 +88,7 @@ async fn execute(
     })
     .await?;
     let render_cancellation = cancellation.clone();
-    tokio::task::spawn_blocking(move || {
+    let output = spawn_output_thread(move || {
         let stdout = io::stdout();
         let writer = CancellableWriter {
             inner: stdout.lock(),
@@ -99,8 +99,20 @@ async fn execute(
             &render_cancellation,
         )
     })
-    .await
-    .map_err(|_| Failure::Output)?
+    .map_err(|_| Failure::Output)?;
+    output.await.map_err(|_| Failure::Output)?
+}
+
+fn spawn_output_thread(
+    render: impl FnOnce() -> Result<(), Failure> + Send + 'static,
+) -> io::Result<tokio::sync::oneshot::Receiver<Result<(), Failure>>> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("anketa-scout-output".into())
+        .spawn(move || {
+            let _ = sender.send(render());
+        })?;
+    Ok(receiver)
 }
 
 struct CancellableWriter<W> {
@@ -111,28 +123,27 @@ struct CancellableWriter<W> {
 impl<W: Write> Write for CancellableWriter<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if self.cancellation.is_cancelled() {
-            return Err(io::ErrorKind::Interrupted.into());
+            return Err(io::Error::other("Вывод отменён"));
         }
         self.inner.write(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
         if self.cancellation.is_cancelled() {
-            return Err(io::ErrorKind::Interrupted.into());
+            return Err(io::Error::other("Вывод отменён"));
         }
         self.inner.flush()
     }
 }
 
 fn output_result(result: io::Result<()>, cancellation: &CancellationToken) -> Result<(), Failure> {
+    if cancellation.is_cancelled() {
+        return Err(Failure::Cancelled);
+    }
     match result {
-        Ok(()) if !cancellation.is_cancelled() => Ok(()),
+        Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::Interrupted && cancellation.is_cancelled() => {
-            Err(Failure::Cancelled)
-        }
         Err(_) => Err(Failure::Output),
-        Ok(()) => Err(Failure::Cancelled),
     }
 }
 
@@ -214,13 +225,44 @@ mod tests {
             cancellation: cancellation.clone(),
         };
         cancellation.cancel();
+        let error = writer.write_all(b"result").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
         assert_eq!(
-            writer.write(b"result").unwrap_err().kind(),
-            io::ErrorKind::Interrupted
-        );
-        assert_eq!(
-            output_result(Err(io::ErrorKind::Interrupted.into()), &cancellation),
+            output_result(Err(error), &cancellation),
             Err(Failure::Cancelled)
         );
+    }
+
+    #[test]
+    fn cancellation_takes_priority_over_broken_pipe() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert_eq!(
+            output_result(Err(io::ErrorKind::BrokenPipe.into()), &cancellation),
+            Err(Failure::Cancelled)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_output_does_not_wait_for_a_blocked_writer_thread() {
+        let (release, blocked) = std::sync::mpsc::channel();
+        let output = spawn_output_thread(move || {
+            blocked.recv().unwrap();
+            Ok(())
+        })
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let signal = cancellation.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            signal.cancel();
+        });
+
+        let result = tokio::select! {
+            result = output => Some(result.unwrap()),
+            _ = cancellation.cancelled() => None,
+        };
+        assert_eq!(result, None);
+        release.send(()).unwrap();
     }
 }

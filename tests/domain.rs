@@ -320,6 +320,22 @@ fn hidden_contact_links_accept_mixed_case_hosts_and_http_vk() {
 }
 
 #[test]
+fn hidden_contact_links_ignore_tracking_query_and_fragment() {
+    let telegram = classify(message(
+        "Люблю го.<br><a href='https://t.me/synthetic_user?start=private#section'>ссылка</a>",
+    ))
+    .unwrap();
+    assert_eq!(telegram.contacts[0].value, "@synthetic_user");
+
+    let vk = classify(message(
+        "Люблю книги.<br><a href='https://vk.com/id12345?from=private#profile'>профиль</a>",
+    ))
+    .unwrap();
+    assert_eq!(vk.contacts[0].kind, ContactKind::Vk);
+    assert_eq!(vk.contacts[0].value, "id12345");
+}
+
+#[test]
 fn canonical_contacts_are_all_preserved_and_deduplicated() {
     let p = classify(message("Произвольный текст.<br>Тг: Mixed_User и https://t.me/mixed_user; VK: id12345; Почта: Reader@EXAMPLE.invalid; Discord: reader.name")).unwrap();
     assert_eq!(
