@@ -13,8 +13,16 @@ pub struct Origin {
     pub link: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediaKind {
+    Image,
+    Video,
+    Other,
+}
+
 #[derive(Clone, Debug)]
 pub struct Attachment {
+    pub kind: MediaKind,
     pub media_type: Option<u64>,
     pub name: Option<String>,
     pub link: String,

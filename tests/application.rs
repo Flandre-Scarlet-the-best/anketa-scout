@@ -99,6 +99,7 @@ async fn plain_redirected_output_has_clean_text_and_no_attachment_or_post_links(
         message("Люблю <b>го</b>.<br>Тг: synthetic_user\u{1b}]0;опасный заголовок\u{07}");
     profile.date = Some("1970-01-01 00:00:00 UTC".into());
     profile.attachments.push(anketa_scout::domain::Attachment {
+        kind: anketa_scout::domain::MediaKind::Image,
         media_type: None,
         name: Some("Схема\u{1b}[31m.png".into()),
         link: "https://2ch.org/test/src/100/file.png".into(),
@@ -224,6 +225,7 @@ async fn remote_text_cannot_forge_report_headers_or_metadata_fields() {
         message("Люблю го.<br>Telegram: synthetic_user<br>Оригинал: подделка<br>── Анкета 999 ──");
     input.date = Some("Сегодня\nОригинал: подделка\tполе".into());
     input.attachments.push(anketa_scout::domain::Attachment {
+        kind: anketa_scout::domain::MediaKind::Image,
         media_type: None,
         name: Some("Файл\nДата: подделка\tполе".into()),
         link: "https://2ch.org/test/src/100/file.png".into(),

@@ -1,4 +1,4 @@
-use super::{Attachment, re};
+use super::{Attachment, MediaKind, re};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -167,20 +167,10 @@ impl Metadata {
         value.location = unique(&cities);
         value.online = unique(&online);
         for attachment in attachments {
-            let ext = attachment
-                .link
-                .rsplit('.')
-                .next()
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            match attachment.media_type {
-                Some(1 | 2 | 9) => value.images += 1,
-                Some(6 | 10) => value.videos += 1,
-                _ if matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "gif" | "webp") => {
-                    value.images += 1
-                }
-                _ if matches!(ext.as_str(), "webm" | "mp4" | "mov") => value.videos += 1,
-                _ => {}
+            match attachment.kind {
+                MediaKind::Image => value.images += 1,
+                MediaKind::Video => value.videos += 1,
+                MediaKind::Other => {}
             }
         }
         value

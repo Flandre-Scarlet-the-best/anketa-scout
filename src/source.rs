@@ -1,6 +1,6 @@
 use crate::{
     Failure,
-    domain::{Attachment, Message, Origin},
+    domain::{Attachment, MediaKind, Message, Origin},
 };
 use regex::Regex;
 use scraper::{ElementRef, Html, Node};
@@ -212,6 +212,17 @@ fn optional_media_type<'de, D: serde::Deserializer<'de>>(
     Ok(Option::<serde_json::Value>::deserialize(deserializer)?.and_then(|value| value.as_u64()))
 }
 
+fn media_kind(code: Option<u64>, path: &str) -> MediaKind {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match code {
+        Some(1 | 2 | 9) => MediaKind::Image,
+        Some(6 | 10) => MediaKind::Video,
+        _ if matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "gif" | "webp") => MediaKind::Image,
+        _ if matches!(ext.as_str(), "webm" | "mp4" | "mov") => MediaKind::Video,
+        _ => MediaKind::Other,
+    }
+}
+
 pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failure> {
     if bytes.len() > MAX_BODY {
         return Err(Failure::Limit);
@@ -303,6 +314,7 @@ fn normalize_posts(
                 return Err(Failure::Format);
             }
             attachments.push(Attachment {
+                kind: media_kind(file.media_type, &file.path),
                 media_type: file.media_type,
                 name: file.displayname,
                 link: link.into(),

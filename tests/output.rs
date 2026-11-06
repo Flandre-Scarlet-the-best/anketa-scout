@@ -13,12 +13,14 @@ fn fixture() -> Report {
     first.date = Some("1970-01-01 00:00:00 UTC".into());
     first.attachments = vec![
         Attachment {
+            kind: anketa_scout::domain::MediaKind::Image,
             media_type: None,
             name: Some("棋 схема.png".into()),
             link: "https://2ch.org/test/src/100/one.png".into(),
             size_kib: Some(7),
         },
         Attachment {
+            kind: anketa_scout::domain::MediaKind::Image,
             media_type: None,
             name: None,
             link: "https://2ch.org/test/src/100/two.png".into(),
@@ -253,6 +255,7 @@ fn untrusted_cells_cannot_forge_structure() {
     m.date = Some("Дата\n│подделка".into());
     m.origin.link = format!("https://2ch.org/{}", "x".repeat(200));
     m.attachments.push(Attachment {
+        kind: anketa_scout::domain::MediaKind::Image,
         media_type: None,
         name: Some("╞\nДата: файл".into()),
         link: "https://2ch.org/│\u{1b}[0m".into(),
