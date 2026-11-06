@@ -1,7 +1,7 @@
 mod common;
 use anketa_scout::{
     Failure,
-    application::run,
+    application::{Cursor, run},
     output::{Options, render, render_with_options, safe},
 };
 use common::{message, source};
@@ -91,6 +91,36 @@ async fn cancellation_during_classification_is_observed_before_success() {
     let result = run(source().page(), &cancellation, async { Ok(messages) }).await;
     assert!(matches!(result, Err(Failure::Cancelled)));
     cancel_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn cursor_is_unchanged_after_receive_failure_or_cancellation() {
+    let cancellation = CancellationToken::new();
+    let mut cursor = Cursor::default();
+    cursor
+        .process(
+            source().page(),
+            &cancellation,
+            vec![message("Люблю го.<br>Тг: synthetic_user")],
+        )
+        .await
+        .unwrap();
+    assert_eq!(cursor.value(), 101);
+
+    let result = cursor
+        .process_with(source().page(), &cancellation, async {
+            Err(Failure::Limit)
+        })
+        .await;
+    assert_eq!(result.err(), Some(Failure::Limit));
+    assert_eq!(cursor.value(), 101);
+
+    cancellation.cancel();
+    let result = cursor
+        .process_with(source().page(), &cancellation, std::future::pending())
+        .await;
+    assert_eq!(result.err(), Some(Failure::Cancelled));
+    assert_eq!(cursor.value(), 101);
 }
 
 #[tokio::test]

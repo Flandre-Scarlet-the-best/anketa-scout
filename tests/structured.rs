@@ -2,7 +2,7 @@ mod common;
 use anketa_scout::{
     Failure,
     application::Cursor,
-    domain::{Age, Gender, classify},
+    domain::{Age, Gender, MediaKind, classify},
     source::normalize_after,
 };
 use common::{message, post, source};
@@ -59,6 +59,44 @@ fn explicit_metadata_and_lower_age_bounds_are_independent() {
 }
 
 #[test]
+fn metadata_collects_fields_across_sentences_and_explicit_bare_ages() {
+    for text in [
+        "Я девушка. Возраст: 25 лет. Город: Тула.",
+        "Кто тут? Я девушка. Мне 25? Город: Тула.",
+        "См. п. 2. Я девушка. Возраст: 25. Город: Тула.",
+    ] {
+        let p = profile(text);
+        assert_eq!(p.metadata.gender, Some(Gender::Female), "{text}");
+        assert_eq!(p.metadata.age, Some(Age::Exact(25)), "{text}");
+        assert_eq!(p.metadata.location.as_deref(), Some("Тула"), "{text}");
+    }
+    for text in ["Возраст: 25", "Мне 25"] {
+        assert_eq!(profile(text).metadata.age, Some(Age::Exact(25)), "{text}");
+    }
+    for text in ["Число 25", "Время 20:30", "Возраст: 17.5"] {
+        assert_eq!(profile(text).metadata.age, None, "{text}");
+    }
+}
+
+#[test]
+fn compact_metadata_collects_conflicts_per_field_without_rejecting_profiles() {
+    for (text, gender, age) in [
+        ("м19 ж25", None, None),
+        ("м19 м25", Some(Gender::Male), None),
+        ("м19 ж19", None, Some(Age::Exact(19))),
+    ] {
+        let p = profile(text);
+        assert_eq!(p.metadata.gender, gender, "{text}");
+        assert_eq!(p.metadata.age, age, "{text}");
+        assert_eq!(p.contacts.len(), 1, "{text}");
+    }
+    let p = profile("м19 ж25. Город: Тула.");
+    assert_eq!(p.metadata.gender, None);
+    assert_eq!(p.metadata.age, None);
+    assert_eq!(p.metadata.location.as_deref(), Some("Тула"));
+}
+
+#[test]
 fn location_online_negation_and_discord_are_not_guessed() {
     for (text, city) in [
         ("ДС1", "Москва"),
@@ -78,7 +116,14 @@ fn location_online_negation_and_discord_are_not_guessed() {
         "Часто бываю в Москве",
         "ищу девушку из Питера",
         "город неважен",
+        "Город: Нет",
+        "Город: Неизвестно",
+        "Город: неизвестна",
+        "Город: неизвестен",
         "Город: неизвестно",
+        "Город: Не знаю",
+        "Город: Unknown",
+        "Город: N/A",
     ] {
         {
             assert_eq!(profile(text).metadata.location, None, "{text}");
@@ -113,9 +158,14 @@ fn display_cleanup_preserves_author_text_and_contact_order() {
 fn media_types_are_preserved_and_counted_without_downloads() {
     let mut p = post(101, "Люблю го. ТГ: synthetic_one");
     p["files"] = json!([
-        {"path":"/test/src/a.jpg","type":1}, {"path":"/test/src/a.png","type":2},
-        {"path":"/test/src/a.webm","type":6}, {"path":"/test/src/a.webp","type":9},
-        {"path":"/test/src/a.mp4","type":10}, {"path":"/test/src/a.bin","type":99}
+        {"path":"/test/src/declared-image.webm","type":1},
+        {"path":"/test/src/declared-image.mp4","type":2},
+        {"path":"/test/src/declared-video.png","type":6},
+        {"path":"/test/src/declared-image.mov","type":9},
+        {"path":"/test/src/declared-video.jpg","type":10},
+        {"path":"/test/src/fallback-image.webp","type":99},
+        {"path":"/test/src/fallback-video.webm","type":99},
+        {"path":"/test/src/unknown.bin","type":99}
     ]);
     let messages = normalize_after(
         &source(),
@@ -124,7 +174,24 @@ fn media_types_are_preserved_and_counted_without_downloads() {
     )
     .unwrap();
     let p = classify(messages.into_iter().next().unwrap()).unwrap();
-    assert_eq!((p.metadata.images, p.metadata.videos), (3, 2));
+    assert_eq!(
+        p.message
+            .attachments
+            .iter()
+            .map(|attachment| attachment.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            MediaKind::Image,
+            MediaKind::Image,
+            MediaKind::Video,
+            MediaKind::Image,
+            MediaKind::Video,
+            MediaKind::Image,
+            MediaKind::Video,
+            MediaKind::Other,
+        ]
+    );
+    assert_eq!((p.metadata.images, p.metadata.videos), (4, 3));
     assert_eq!(p.message.attachments[2].media_type, Some(6));
 }
 

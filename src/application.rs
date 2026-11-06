@@ -12,7 +12,7 @@ pub struct Report {
     pub profiles: Vec<Profile>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct Cursor(u64);
 
 impl Cursor {
@@ -26,19 +26,38 @@ impl Cursor {
         cancellation: &CancellationToken,
         messages: Vec<Message>,
     ) -> Result<Report, Failure> {
-        let next = messages
-            .iter()
-            .map(|message| message.origin.post)
-            .max()
-            .unwrap_or(self.0)
-            .max(self.0);
-        let messages = messages
-            .into_iter()
-            .filter(|message| message.origin.post > self.0)
-            .collect();
-        let report = run(source, cancellation, async { Ok(messages) }).await?;
-        self.0 = next;
-        Ok(report)
+        self.process_with(source, cancellation, async { Ok(messages) })
+            .await
+    }
+
+    pub async fn process_with(
+        &mut self,
+        source: String,
+        cancellation: &CancellationToken,
+        receive: impl Future<Output = Result<Vec<Message>, Failure>>,
+    ) -> Result<Report, Failure> {
+        crate::diagnostics::started();
+        let result = async {
+            let messages = receive_messages(cancellation, receive).await?;
+            let next = messages
+                .iter()
+                .map(|message| message.origin.post)
+                .max()
+                .unwrap_or(self.0)
+                .max(self.0);
+            let messages = messages
+                .into_iter()
+                .filter(|message| message.origin.post > self.0)
+                .collect();
+            let report = process_messages(source, cancellation, messages).await?;
+            self.0 = next;
+            Ok(report)
+        }
+        .await;
+        if let Err(failure) = result {
+            crate::diagnostics::failed(failure);
+        }
+        result
     }
 }
 
@@ -48,11 +67,33 @@ pub async fn run(
     receive: impl Future<Output = Result<Vec<Message>, Failure>>,
 ) -> Result<Report, Failure> {
     crate::diagnostics::started();
-    let messages = tokio::select! {
+    let result = async {
+        let messages = receive_messages(cancellation, receive).await?;
+        process_messages(source, cancellation, messages).await
+    }
+    .await;
+    if let Err(failure) = result {
+        crate::diagnostics::failed(failure);
+    }
+    result
+}
+
+async fn receive_messages(
+    cancellation: &CancellationToken,
+    receive: impl Future<Output = Result<Vec<Message>, Failure>>,
+) -> Result<Vec<Message>, Failure> {
+    tokio::select! {
         biased;
-        _ = cancellation.cancelled() => return Err(Failure::Cancelled),
-        messages = receive => messages.inspect_err(|failure| crate::diagnostics::failed(*failure))?,
-    };
+        _ = cancellation.cancelled() => Err(Failure::Cancelled),
+        messages = receive => messages,
+    }
+}
+
+async fn process_messages(
+    source: String,
+    cancellation: &CancellationToken,
+    messages: Vec<Message>,
+) -> Result<Report, Failure> {
     if messages
         .iter()
         .any(|message| !origin_matches_source(&message.origin, &source))

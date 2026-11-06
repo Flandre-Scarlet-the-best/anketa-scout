@@ -23,12 +23,54 @@ fn client_builder() -> ClientBuilder {
         .https_only(true)
 }
 
+/// HTTP-клиент одного сеанса получения.
+pub struct Session {
+    client: Client,
+}
+
+impl Session {
+    pub fn new() -> Result<Self, Failure> {
+        Ok(Self {
+            client: client_builder().build().map_err(network)?,
+        })
+    }
+
+    pub async fn fetch(
+        &self,
+        source: &ThreadUrl,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<u8>, Failure> {
+        self.fetch_at(source, None, cancellation, "https://2ch.org")
+            .await
+    }
+
+    pub async fn fetch_after(
+        &self,
+        source: &ThreadUrl,
+        cursor: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<u8>, Failure> {
+        self.fetch_at(source, Some(cursor), cancellation, "https://2ch.org")
+            .await
+    }
+
+    async fn fetch_at(
+        &self,
+        source: &ThreadUrl,
+        cursor: Option<u64>,
+        cancellation: &CancellationToken,
+        base: &str,
+    ) -> Result<Vec<u8>, Failure> {
+        fetch_with_client(&self.client, source, cursor, cancellation, base).await
+    }
+}
+
 pub async fn fetch(
     source: &ThreadUrl,
     cancellation: &CancellationToken,
 ) -> Result<Vec<u8>, Failure> {
-    let client = client_builder().build().map_err(network)?;
-    fetch_with_client(&client, source, None, cancellation, "https://2ch.org").await
+    let session = Session::new()?;
+    session.fetch(source, cancellation).await
 }
 
 pub async fn fetch_after(
@@ -36,15 +78,8 @@ pub async fn fetch_after(
     cursor: u64,
     cancellation: &CancellationToken,
 ) -> Result<Vec<u8>, Failure> {
-    let client = client_builder().build().map_err(network)?;
-    fetch_with_client(
-        &client,
-        source,
-        Some(cursor),
-        cancellation,
-        "https://2ch.org",
-    )
-    .await
+    let session = Session::new()?;
+    session.fetch_after(source, cursor, cancellation).await
 }
 
 async fn fetch_with_client(
@@ -205,10 +240,13 @@ mod tests {
             }
             paths
         });
-        let client = test_client();
+        let session = Session {
+            client: test_client(),
+        };
         let cancel = CancellationToken::new();
         let mut cursor = Cursor::default();
-        let bytes = fetch_with_client(&client, &source, None, &cancel, &base)
+        let bytes = session
+            .fetch_at(&source, None, &cancel, &base)
             .await
             .unwrap();
         let report = cursor
@@ -227,9 +265,9 @@ mod tests {
         ] {
             let before = cursor.value();
             let result = async {
-                let bytes =
-                    fetch_with_client(&client, &source, Some(cursor.value()), &cancel, &base)
-                        .await?;
+                let bytes = session
+                    .fetch_at(&source, Some(cursor.value()), &cancel, &base)
+                    .await?;
                 let messages = normalize_after(&source, &bytes, cursor.value())?;
                 cursor.process(source.page(), &cancel, messages).await
             }

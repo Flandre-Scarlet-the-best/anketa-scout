@@ -135,6 +135,50 @@ static LABEL: LazyLock<Regex> = LazyLock::new(|| {
         r"(?ix)^(telegram|телеграмм?|телега|тгшка|тг|tg|discord|дискордик|дискорд|диск|дс|вк|vk|max|макс)\s*[:=—-]?\s*",
     )
 });
+
+fn contact_kind_from_label(label: &str) -> ContactKind {
+    let label = label.to_lowercase();
+    if label.starts_with('д') || label.starts_with("discord") {
+        ContactKind::Discord
+    } else if label.starts_with("max") || label.starts_with("макс") {
+        ContactKind::Max
+    } else if label.starts_with("вк") || label.starts_with("vk") {
+        ContactKind::Vk
+    } else {
+        ContactKind::Telegram
+    }
+}
+
+fn preceding_contact_label(
+    text: &str,
+    position: usize,
+    line_breaks: &[usize],
+) -> Option<(usize, usize, ContactKind)> {
+    let previous_break = line_breaks
+        .partition_point(|index| *index < position)
+        .checked_sub(1)?;
+    let line_end = line_breaks[previous_break];
+    let line_start = previous_break
+        .checked_sub(1)
+        .map_or(0, |index| line_breaks[index] + 1);
+    let line = &text[line_start..line_end];
+    if line.len() > 512 {
+        return None;
+    }
+    let leading = line.len() - line.trim_start().len();
+    let trimmed = line.trim();
+    let label = LABEL.captures(trimmed)?;
+    let matched = label.get(0)?;
+    if matched.end() != trimmed.len() {
+        return None;
+    }
+    Some((
+        line_start + leading,
+        line_start + leading + matched.end(),
+        contact_kind_from_label(&label[1]),
+    ))
+}
+
 static FOREIGN: LazyLock<Regex> = LazyLock::new(|| {
     re(
         r"(?ix)\b(?:его|её|ее|чужой|контакт\s+друга|пример|например|смотрю|читаю|мой\s+канал|наш\s+сервер)\s*[:—-]?\s*",
@@ -153,6 +197,11 @@ static INSTRUCTION: LazyLock<Regex> = LazyLock::new(|| {
         r"(?i)(?:убери(?:те)?|убрать|удали(?:те)?|удалить|без\s+(?:пробел|нижн)|замени(?:те)?)[^\n]*",
     )
 });
+static REPLACE_INSTRUCTION: LazyLock<Regex> = LazyLock::new(|| {
+    re(r#"(?i)замени(?:те)?\s+['"«]?([a-z0-9_+.-]+)['"»]?\s+на\s+['"«]?([a-z0-9_+.-]+)"#)
+});
+static REMOVE_INSTRUCTION: LazyLock<Regex> =
+    LazyLock::new(|| re(r#"(?i)(?:символ|букву)\s*['"«]?([a-z0-9_+.-])['"»]?(?:\s|$|\))"#));
 static QUOTED: LazyLock<Regex> =
     LazyLock::new(|| re(r#"(?s)"[^"]*"|«[^»]*»|“[^”]*”|‘[^’]*’|\x60[^\x60]*\x60"#));
 
@@ -181,19 +230,14 @@ fn restore(raw: &str, instruction: &str) -> Option<String> {
         value = value.replace('_', "");
         applied = true;
     }
-    static REPLACE: LazyLock<Regex> = LazyLock::new(|| {
-        re(r#"(?i)замени(?:те)?\s+['"«]?([a-z0-9_+.-]+)['"»]?\s+на\s+['"«]?([a-z0-9_+.-]+)"#)
-    });
-    if let Some(c) = REPLACE.captures(original_instruction) {
+    if let Some(c) = REPLACE_INSTRUCTION.captures(original_instruction) {
         if !value.contains(&c[1]) {
             return None;
         }
         value = value.replace(&c[1], &c[2]);
         applied = true;
     }
-    static REMOVE: LazyLock<Regex> =
-        LazyLock::new(|| re(r#"(?i)(?:символ|букву)\s*['"«]?([a-z0-9_+.-])['"»]?(?:\s|$|\))"#));
-    if let Some(c) = REMOVE.captures(original_instruction) {
+    if let Some(c) = REMOVE_INSTRUCTION.captures(original_instruction) {
         if !value.contains(&c[1]) {
             return None;
         }
@@ -526,6 +570,7 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
     let mut foreign = false;
     let mut unresolved = false;
     let mut mask_spans = Vec::new();
+    let mut contact_spans = Vec::new();
     let mut foreign_cursor = 0;
     let mut foreign_boundary = 0;
     let mut remainder_cursor = 0;
@@ -628,51 +673,24 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
                 path.to_owned(),
             )
         } else if capture.kind == CaptureKind::Label {
-            let label = LABEL.find(raw_match).unwrap();
-            let name = label.as_str().to_lowercase();
-            if name.starts_with("дс")
-                && !name.contains(':')
-                && raw_match[label.end()..].starts_with(|c: char| c.is_ascii_digit())
+            let label = LABEL.captures(raw_match).unwrap();
+            let matched = label.get(0).unwrap();
+            if label[1].to_lowercase() == "дс"
+                && !matched.as_str().contains(':')
+                && raw_match[matched.end()..].starts_with(|c: char| c.is_ascii_digit())
             {
                 continue;
             }
-            let kind = if name.starts_with('д') || name.starts_with("discord") {
-                ContactKind::Discord
-            } else if name.starts_with("max") || name.starts_with("макс") {
-                ContactKind::Max
-            } else if name.starts_with("вк") || name.starts_with("vk") {
-                ContactKind::Vk
-            } else {
-                ContactKind::Telegram
-            };
             (
-                kind,
-                raw_match[label.end()..].trim_start_matches('@').to_owned(),
+                contact_kind_from_label(&label[1]),
+                raw_match[matched.end()..]
+                    .trim_start_matches('@')
+                    .to_owned(),
             )
-        } else if let Some((offset, label)) = {
-            static PRECEDING_LABEL: LazyLock<Regex> = LazyLock::new(|| {
-                re(
-                    r"(?i)(?:^|\n)[\t ]*(discord|дискорд|дс|max|макс|vk|вк|telegram|тг|tg)[\t ]*:[\t ]*\n[\t ]*$",
-                )
-            });
-            let boundary = line_breaks.partition_point(|index| *index < m_start);
-            let offset = boundary
-                .checked_sub(2)
-                .map_or(0, |index| line_breaks[index] + 1);
-            (m_start - offset <= 512)
-                .then(|| PRECEDING_LABEL.captures(&authored[offset..m_start]))
-                .flatten()
-                .map(|label| (offset, label))
-        } {
-            let matched = label.get(0).unwrap();
-            mask_spans.push((offset + matched.start(), offset + matched.end()));
-            let label = label[1].to_lowercase();
-            let kind = match label.as_str() {
-                "discord" | "дискорд" | "дс" => ContactKind::Discord,
-                "max" | "макс" => ContactKind::Max,
-                "vk" | "вк" => ContactKind::Vk,
-                _ => ContactKind::Telegram,
-            };
+        } else if let Some((start, end, kind)) =
+            preceding_contact_label(&authored, m_start, &line_breaks)
+        {
+            mask_spans.push((start, end));
             (kind, raw_match.trim_start_matches('@').to_owned())
         } else {
             static SEPARATOR: LazyLock<Regex> =
@@ -743,6 +761,7 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
             remainder_cursor = end;
             continue;
         };
+        contact_spans.push((m_start, m_end));
         mask_spans.push((m_start, end));
         remainder_cursor = end;
         previous_contact = Some((end, kind));
@@ -777,12 +796,16 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
         };
         if seen_contacts.insert((contact.kind, contact.value.clone())) {
             contacts.push(contact);
-        } else if !contact.assumed_platform
-            && let Some(existing) = contacts
-                .iter_mut()
-                .find(|item| item.kind == contact.kind && item.value == contact.value)
+        } else if let Some(existing) = contacts
+            .iter_mut()
+            .find(|item| item.kind == contact.kind && item.value == contact.value)
         {
-            existing.assumed_platform = false;
+            if contact.ownership == Ownership::ExplicitSelf {
+                existing.ownership = Ownership::ExplicitSelf;
+            }
+            if !contact.assumed_platform {
+                existing.assumed_platform = false;
+            }
         }
     }
     if contacts.is_empty() {
@@ -803,7 +826,7 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
         return Err(Rejection::ContactOnly);
     }
     let metadata = Metadata::extract(&authored, &message.attachments);
-    let description = clean_description(&authored, &mask_spans);
+    let description = clean_description(&authored, &mask_spans, &contact_spans);
     Ok(Profile {
         message,
         contacts,
@@ -812,15 +835,130 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
     })
 }
 
-fn clean_description(text: &str, spans: &[(usize, usize)]) -> String {
+fn is_contact_restoration_instruction(text: &str) -> bool {
+    let instruction = text.trim();
+    let Some(matched) = INSTRUCTION.find(instruction) else {
+        return false;
+    };
+    if matched.start() != 0 || matched.end() != instruction.len() {
+        return false;
+    }
+
+    let supported_operation = [
+        restore(" ", instruction),
+        restore("0", instruction),
+        restore("()", instruction),
+        restore("_", instruction),
+        REPLACE_INSTRUCTION
+            .captures(instruction)
+            .and_then(|capture| restore(&capture[1], instruction)),
+        REMOVE_INSTRUCTION
+            .captures(instruction)
+            .and_then(|capture| restore(&capture[1], instruction)),
+    ]
+    .into_iter()
+    .any(|result| result.is_some());
+    if !supported_operation {
+        return false;
+    }
+
+    let lower = instruction.to_lowercase();
+    let words = REMOVE_INSTRUCTION
+        .replace_all(
+            &REPLACE_INSTRUCTION.replace_all(&lower, " замена "),
+            " удаление ",
+        )
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let mut index = 0;
+    while index < words.len() {
+        match words[index].as_str() {
+            "и" => {
+                if index == 0 || index + 1 == words.len() {
+                    return false;
+                }
+                index += 1;
+            }
+            "после" => {
+                if index + 1 == words.len() {
+                    return false;
+                }
+                index += 2;
+            }
+            "убери"
+            | "уберите"
+            | "убрать"
+            | "удали"
+            | "удалите"
+            | "удалить"
+            | "без"
+            | "пробел"
+            | "пробела"
+            | "пробелы"
+            | "пробелов"
+            | "пробелами"
+            | "нул"
+            | "нули"
+            | "нуля"
+            | "нулей"
+            | "скобка"
+            | "скобки"
+            | "скобок"
+            | "скобку"
+            | "скобками"
+            | "нижнего"
+            | "нижнее"
+            | "подчеркивания"
+            | "подчёркивания"
+            | "подчеркивание"
+            | "подчёркивание"
+            | "замена"
+            | "удаление" => index += 1,
+            _ => return false,
+        }
+    }
+    true
+}
+
+fn clean_description(
+    text: &str,
+    spans: &[(usize, usize)],
+    contact_spans: &[(usize, usize)],
+) -> String {
     static PREFIX: LazyLock<Regex> = LazyLock::new(|| {
         re(r"(?i)(?:\b(?:мой|моя|почта|mailto|email|e-mail|контакт|связь)\s*[:=—-]?\s*)+$")
     });
     static REPLY: LazyLock<Regex> = LazyLock::new(|| re(r">>[0-9]+"));
+    static PARENTHETICAL: LazyLock<Regex> = LazyLock::new(|| re(r"\([^()\n]*\)"));
     let mut spans = spans.to_vec();
     for (start, _) in &mut spans {
         if let Some(prefix) = PREFIX.find(&text[..*start]) {
             *start = prefix.start();
+        }
+    }
+    for matched in PARENTHETICAL.find_iter(text) {
+        let start = matched.start();
+        let end = matched.end();
+        let instruction = &text[start + 1..end - 1];
+        let follows_contact = contact_spans.iter().any(|(_, contact_end)| {
+            *contact_end <= start
+                && text[*contact_end..start]
+                    .chars()
+                    .all(|character| !character.is_alphanumeric())
+        });
+        if follows_contact && is_contact_restoration_instruction(instruction) {
+            let end = if text
+                .as_bytes()
+                .get(end)
+                .is_some_and(|character| matches!(character, b'.' | b'!' | b'?'))
+            {
+                end + 1
+            } else {
+                end
+            };
+            spans.push((start, end));
         }
     }
     let masked = mask_text(text, &mut spans);
@@ -830,14 +968,7 @@ fn clean_description(text: &str, spans: &[(usize, usize)]) -> String {
         .filter_map(|line| {
             let line = line.trim();
             let without_noise = DECORATION.replace_all(line, "");
-            if !without_noise.chars().any(char::is_alphanumeric)
-                || (line.starts_with('(')
-                    && line.ends_with(')')
-                    && !line[1..line.len() - 1].contains(['(', ')'])
-                    && INSTRUCTION
-                        .find(line)
-                        .is_some_and(|matched| matched.start() == 1))
-            {
+            if !without_noise.chars().any(char::is_alphanumeric) {
                 None
             } else {
                 Some(line.split_whitespace().collect::<Vec<_>>().join(" "))

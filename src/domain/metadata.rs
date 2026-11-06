@@ -2,6 +2,63 @@ use super::{Attachment, MediaKind, re};
 use regex::Regex;
 use std::sync::LazyLock;
 
+fn split_statements(text: &str) -> Vec<&str> {
+    fn is_abbreviation(statement: &str) -> bool {
+        let token = statement.split_whitespace().last().unwrap_or("");
+        if token.chars().any(char::is_numeric) {
+            return false;
+        }
+        let letters = token
+            .chars()
+            .filter(|character| character.is_alphabetic())
+            .flat_map(|character| character.to_lowercase())
+            .collect::<String>();
+        letters.chars().count() == 1
+            || matches!(
+                letters.as_str(),
+                "г" | "ул"
+                    | "д"
+                    | "пос"
+                    | "п"
+                    | "с"
+                    | "см"
+                    | "м"
+                    | "км"
+                    | "тд"
+                    | "тп"
+                    | "те"
+                    | "им"
+                    | "стр"
+                    | "рис"
+                    | "ок"
+                    | "пр"
+                    | "др"
+            )
+    }
+
+    let mut statements = Vec::new();
+    for clause in text.split(';') {
+        let mut start = 0;
+        for (offset, punctuation) in clause.char_indices() {
+            let end = offset + punctuation.len_utf8();
+            let tail = &clause[end..];
+            let boundary = punctuation == '!'
+                || (matches!(punctuation, '.' | '?')
+                    && tail.chars().next().is_some_and(char::is_whitespace)
+                    && !tail.trim().is_empty()
+                    && (punctuation != '.' || !is_abbreviation(&clause[start..end])));
+            if boundary {
+                statements.push(&clause[start..offset]);
+                start = end;
+            }
+        }
+        if start < clause.len() {
+            statements.push(&clause[start..]);
+        }
+    }
+    statements
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Gender {
     Male,
@@ -33,6 +90,11 @@ impl Metadata {
         });
         static COMPACT: LazyLock<Regex> =
             LazyLock::new(|| re(r"(?i)^(?:я\s+)?([мжд])\s*([1-9][0-9])(\+?)(?:\s|[,.;]|$)"));
+        static EXPLICIT_AGE: LazyLock<Regex> = LazyLock::new(|| {
+            re(
+                r"(?i)^(?:мне|возраст)\s*[:—-]?\s*([1-9][0-9])\s*(\+|лет\b|год(?:а)?\b|лвл\b|lvl\b)?",
+            )
+        });
         static AGE: LazyLock<Regex> = LazyLock::new(|| {
             re(
                 r"(?i)^(?:(?:мне|возраст)\s*[:—-]?\s*)?([1-9][0-9])\s*(\+|лет\b|год(?:а)?\b|лвл\b|lvl\b)",
@@ -58,7 +120,7 @@ impl Metadata {
             .filter(|line| !line.trim_start().starts_with('>'))
         {
             // Самоописание принимается только в начале самостоятельного предложения.
-            for statement in line.split(['\n', ';', '!']) {
+            for statement in split_statements(line) {
                 let statement = statement.trim();
                 static TARGET: LazyLock<Regex> = LazyLock::new(|| {
                     re(
@@ -69,7 +131,9 @@ impl Metadata {
                     continue;
                 }
                 let mut rest = statement;
-                if let Some(c) = COMPACT.captures(rest) {
+                let mut compact_found = false;
+                while let Some(c) = COMPACT.captures(rest) {
+                    compact_found = true;
                     genders.push(if c[1].eq_ignore_ascii_case("м") {
                         Gender::Male
                     } else {
@@ -83,7 +147,8 @@ impl Metadata {
                         });
                     }
                     rest = rest[c[0].len()..].trim_start_matches([',', ' ', '.']);
-                } else if let Some(c) = SELF.captures(rest) {
+                }
+                if !compact_found && let Some(c) = SELF.captures(rest) {
                     genders.push(match c[1].to_lowercase().as_str() {
                         "кун" | "кунчик" | "парень" | "мужчина" | "м" => {
                             Gender::Male
@@ -92,7 +157,26 @@ impl Metadata {
                     });
                     rest = rest[c[0].len()..].trim_start_matches([',', ' ', ':']);
                 }
-                if let Some(c) = AGE.captures(rest).or_else(|| {
+                let explicit_age = EXPLICIT_AGE.captures(rest).filter(|capture| {
+                    let tail = &rest[capture[0].len()..];
+                    let decimal_fraction = tail.strip_prefix('.').is_some_and(|fraction| {
+                        fraction
+                            .chars()
+                            .next()
+                            .is_some_and(|ch| ch.is_ascii_digit())
+                    });
+                    !tail.chars().next().is_some_and(char::is_alphanumeric) && !decimal_fraction
+                });
+                if let Some(c) = explicit_age {
+                    if let Ok(n) = c[1].parse() {
+                        ages.push(if c.get(2).is_some_and(|suffix| suffix.as_str() == "+") {
+                            Age::AtLeast(n)
+                        } else {
+                            Age::Exact(n)
+                        });
+                    }
+                    rest = rest[c[0].len()..].trim_start_matches([',', ' ', '.']);
+                } else if let Some(c) = AGE.captures(rest).or_else(|| {
                     (rest != statement)
                         .then(|| BARE_AGE.captures(rest))
                         .flatten()
@@ -124,15 +208,42 @@ impl Metadata {
                     );
                 } else if let Some(c) = CITY.captures(rest) {
                     let city = c[1].trim();
-                    let city = match city.to_lowercase().as_str() {
-                        "дс" | "дс1" | "мск" | "москва" => "Москва",
-                        "дс2" | "спб" | "питер" | "санкт-петербург" => {
-                            "Санкт-Петербург"
+                    let normalized = city.to_lowercase();
+                    if !matches!(
+                        normalized.as_str(),
+                        "нет"
+                            | "неизвестно"
+                            | "неизвестен"
+                            | "неизвестна"
+                            | "неизвестны"
+                            | "не знаю"
+                            | "не указан"
+                            | "не указана"
+                            | "не указано"
+                            | "не указаны"
+                            | "не задано"
+                            | "нет данных"
+                            | "неважно"
+                            | "не важно"
+                            | "не имеет значения"
+                            | "unknown"
+                            | "unspecified"
+                            | "not known"
+                            | "not specified"
+                            | "none"
+                            | "na"
+                            | "n/a"
+                    ) {
+                        let city = match normalized.as_str() {
+                            "дс" | "дс1" | "мск" | "москва" => "Москва",
+                            "дс2" | "спб" | "питер" | "санкт-петербург" => {
+                                "Санкт-Петербург"
+                            }
+                            _ => city,
+                        };
+                        if city.chars().next().is_some_and(char::is_uppercase) {
+                            cities.push(city.to_owned());
                         }
-                        _ => city,
-                    };
-                    if city.chars().next().is_some_and(char::is_uppercase) {
-                        cities.push(city.to_owned());
                     }
                 }
                 let lower = rest.to_lowercase();

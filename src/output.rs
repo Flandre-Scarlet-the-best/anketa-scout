@@ -202,6 +202,14 @@ pub fn render_batch(
             Role::Metadata,
             palette,
         )?;
+        field(
+            &mut output,
+            width,
+            "Тред",
+            &cell_text(&report.source, false),
+            Role::Metadata,
+            palette,
+        )?;
         if width >= 24 {
             let mut summary = table(width);
             summary.set_header(vec!["Сообщений", "Анкет"]).add_row(vec![

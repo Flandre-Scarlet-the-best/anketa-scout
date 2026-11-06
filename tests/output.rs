@@ -2,7 +2,7 @@ mod common;
 use anketa_scout::{
     application::Report,
     domain::{Attachment, classify},
-    output::{Options, View, render_with_options, style::*},
+    output::{Options, View, render_batch, render_with_options, style::*},
 };
 use common::message;
 
@@ -246,6 +246,70 @@ fn compact_is_explicit_and_preview_is_bounded() {
 }
 
 #[test]
+fn thread_source_is_visible_without_post_or_attachment_links_in_both_views() {
+    let report = fixture();
+    for view in [View::Full, View::Compact] {
+        for width in [Some(8), Some(40), Some(96)] {
+            let text = draw(
+                &report,
+                Options {
+                    view,
+                    width,
+                    ..Options::default()
+                },
+            );
+            let labelled = labelled_cells(&text);
+            let sources: Vec<_> = labelled
+                .iter()
+                .filter(|(label, _)| label == "Тред")
+                .collect();
+            assert_eq!(sources.len(), 1, "Источник должен быть только в сводке");
+            assert!(joined(&sources[0].1).contains(&joined(&report.source)));
+
+            for profile in &report.profiles {
+                assert!(!text.contains(&profile.message.origin.link));
+                for attachment in &profile.message.attachments {
+                    assert!(!text.contains(&attachment.link));
+                }
+            }
+            assert!(!text.contains("Вложение"));
+        }
+    }
+}
+
+#[test]
+fn thread_source_is_sanitized_and_not_repeated_in_later_batches() {
+    let mut report = fixture();
+    let thread_url = report.source.clone();
+    report.source.push_str("\n│ ПОДДЕЛКА | › \u{1b}[2J\u{202e}");
+    let text = draw(
+        &report,
+        Options {
+            width: Some(40),
+            ..Options::default()
+        },
+    );
+    assert!(!text.contains('\u{1b}'));
+    assert!(!text.contains('\u{202e}'));
+    assert!(text.contains("\\u{2502}"));
+    assert!(text.contains("\\u{007C}"));
+    assert!(text.contains("\\u{203A}"));
+    assert_eq!(
+        labelled_cells(&text)
+            .iter()
+            .filter(|(label, _)| label == "Тред")
+            .count(),
+        1
+    );
+
+    let mut bytes = vec![];
+    render_batch(&report, &mut bytes, Options::default(), false).unwrap();
+    let later_batch = String::from_utf8(bytes).unwrap();
+    assert!(!later_batch.contains("Тред"));
+    assert!(!later_batch.contains(&thread_url));
+}
+
+#[test]
 fn untrusted_cells_cannot_forge_structure() {
     let attack = "Люблю го.<br>Тг: synthetic_user<br>│ ╭╮╰╯ ┬ ┼ | ›<br>Дата: подделка<br>Anketa Scout<br><br>Telegram: подделка\u{1b}]8;;https://evil.invalid\u{07}\u{1b}[2J\u{202e}\u{2066}";
     let mut report = fixture();
@@ -361,14 +425,14 @@ fn summary_counts_and_empty_states_do_not_invent_profiles() {
     let mut report = fixture();
     let text = draw(&report, Options::default());
     let data = cells(&text);
-    assert_eq!(&data[2..4], &["3\n", "2\n"]);
+    assert_eq!(&data[3..5], &["3\n", "2\n"]);
     report.profiles.clear();
     for (processed, status) in [(0, "пустой тред"), (3, "не найдено")] {
         report.processed = processed;
         let text = draw(&report, Options::default());
         let data = cells(&text);
-        assert_eq!(data[2], format!("{processed}\n"));
-        assert_eq!(data[3], "0\n");
+        assert_eq!(data[3], format!("{processed}\n"));
+        assert_eq!(data[4], "0\n");
         assert!(text.contains(status));
         assert!(!text.contains("пост №"));
         assert!(!text.contains("Контакты"));
