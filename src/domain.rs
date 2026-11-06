@@ -154,6 +154,14 @@ fn preceding_contact_label(
     position: usize,
     line_breaks: &[usize],
 ) -> Option<(usize, usize, ContactKind)> {
+    let current_break = line_breaks.partition_point(|index| *index < position);
+    let current_start = current_break
+        .checked_sub(1)
+        .map_or(0, |index| line_breaks[index] + 1);
+    let prefix = DECORATION.replace_all(&text[current_start..position], "");
+    if prefix.chars().any(char::is_alphanumeric) {
+        return None;
+    }
     let previous_break = line_breaks
         .partition_point(|index| *index < position)
         .checked_sub(1)?;

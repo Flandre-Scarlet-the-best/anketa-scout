@@ -129,6 +129,7 @@ fn location_online_negation_and_discord_are_not_guessed() {
             assert_eq!(profile(text).metadata.location, None, "{text}");
         }
     }
+    assert_eq!(profile("ДС<br>@synthetic_user").metadata.location, None);
     assert_eq!(profile("Онлайн").metadata.online, Some(true));
     assert_eq!(
         profile("онлайн-общение не интересует").metadata.online,
@@ -418,4 +419,11 @@ fn explicit_platform_on_preceding_line_keeps_priority_and_is_not_description() {
         assert_eq!(p.description, "Люблю го.");
         assert!(classify(message(&format!("{label}:<br>@synthetic_user"))).is_err());
     }
+    let owned = classify(message("Люблю го.<br>Discord:<br>мой @synthetic_user")).unwrap();
+    assert_eq!(owned.contacts[0].kind, ContactKind::Discord);
+    assert_eq!(
+        owned.contacts[0].ownership,
+        anketa_scout::domain::Ownership::ExplicitSelf
+    );
+    assert!(classify(message("Люблю го.<br>Discord:<br>Дружу с @synthetic_user")).is_err());
 }

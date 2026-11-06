@@ -115,10 +115,11 @@ impl Metadata {
         let mut ages = Vec::new();
         let mut cities = Vec::new();
         let mut online = Vec::new();
-        for line in text
+        let lines = text
             .lines()
             .filter(|line| !line.trim_start().starts_with('>'))
-        {
+            .collect::<Vec<_>>();
+        for (line_index, line) in lines.iter().enumerate() {
             // Самоописание принимается только в начале самостоятельного предложения.
             for statement in split_statements(line) {
                 let statement = statement.trim();
@@ -190,10 +191,14 @@ impl Metadata {
                     }
                     rest = rest[c[0].len()..].trim_start_matches([',', ' ', '.']);
                 }
+                let next_line_starts_with_contact = lines
+                    .get(line_index + 1)
+                    .is_some_and(|next| next.trim_start().starts_with('@'));
                 if let Some(c) = ALIAS.captures(rest).filter(|c| {
                     !c[1].to_lowercase().starts_with("дс")
                         || !rest[c[0].len()..].contains('@')
                             && !rest.to_lowercase().contains("discord")
+                            && !(c[1].to_lowercase() == "дс" && next_line_starts_with_contact)
                 }) {
                     // «ДС: username» и «ДС Discord» не являются географией.
                     cities.push(
