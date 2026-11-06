@@ -149,6 +149,14 @@ fn contact_kind_from_label(label: &str) -> ContactKind {
     }
 }
 
+fn ambiguous_max_label(name: &str, matched: &str, tail: &str) -> bool {
+    matches!(name, "max" | "макс")
+        && !matched
+            .chars()
+            .any(|character| matches!(character, ':' | '='))
+        && !tail.starts_with('@')
+}
+
 const MAX_CONTACT_LABEL_CONTEXT: usize = 512;
 
 fn preceding_contact_label(
@@ -171,6 +179,10 @@ fn preceding_contact_label(
     let label = LABEL.captures(trimmed)?;
     let matched = label.get(0)?;
     if matched.end() != trimmed.len() {
+        return None;
+    }
+    let name = label[1].to_lowercase();
+    if ambiguous_max_label(&name, matched.as_str(), &trimmed[matched.end()..]) {
         return None;
     }
     let current_start = line_end + 1;
@@ -686,16 +698,10 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
             let matched = label.get(0).unwrap();
             let name = label[1].to_lowercase();
             let tail = &raw_match[matched.end()..];
-            let explicit_separator = matched
-                .as_str()
-                .chars()
-                .any(|character| matches!(character, ':' | '=' | '—' | '-'));
             if (name == "дс"
                 && !matched.as_str().contains(':')
                 && tail.starts_with(|character: char| character.is_ascii_digit()))
-                || (matches!(name.as_str(), "max" | "макс")
-                    && !explicit_separator
-                    && !tail.starts_with('@'))
+                || ambiguous_max_label(&name, matched.as_str(), tail)
             {
                 continue;
             }

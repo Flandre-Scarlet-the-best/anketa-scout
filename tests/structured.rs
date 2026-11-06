@@ -19,6 +19,7 @@ fn profile(text: &str) -> anketa_scout::domain::Profile {
 #[test]
 fn explicit_metadata_and_lower_age_bounds_are_independent() {
     for (text, gender, age) in [
+        ("М19", Some(Gender::Male), Some(Age::Exact(19))),
         ("м19", Some(Gender::Male), Some(Age::Exact(19))),
         ("д21", Some(Gender::Female), Some(Age::Exact(21))),
         ("кун 32", Some(Gender::Male), Some(Age::Exact(32))),

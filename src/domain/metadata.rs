@@ -135,7 +135,7 @@ impl Metadata {
                 let mut compact_found = false;
                 while let Some(c) = COMPACT.captures(rest) {
                     compact_found = true;
-                    genders.push(if c[1].eq_ignore_ascii_case("м") {
+                    genders.push(if c[1].to_lowercase() == "м" {
                         Gender::Male
                     } else {
                         Gender::Female

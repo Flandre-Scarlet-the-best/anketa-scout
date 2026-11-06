@@ -40,6 +40,33 @@ fn ambiguous_max_words_are_not_contacts_or_hidden_text() {
 
     let explicit = classify(message("Люблю го.<br>MAX: synthetic_user")).unwrap();
     assert_eq!(explicit.contacts[0].kind, ContactKind::Max);
+
+    let previous_line = classify(message("Люблю го.<br>Макс<br>@synthetic_user")).unwrap();
+    assert_eq!(previous_line.contacts[0].kind, ContactKind::Telegram);
+    assert!(previous_line.description.contains("Макс"));
+
+    for separator in ['-', '—'] {
+        let text = format!("Меня зовут Макс {separator} 25 лет. Люблю го.<br>ТГ: synthetic_user");
+        let profile = classify(message(&text)).unwrap();
+        assert!(
+            profile
+                .description
+                .contains(&format!("Макс {separator} 25 лет"))
+        );
+    }
+}
+
+#[test]
+fn dash_contact_separators_remain_supported_for_telegram_and_vk() {
+    for (label, kind) in [
+        ("ТГ - synthetic_user", ContactKind::Telegram),
+        ("ТГ — synthetic_user", ContactKind::Telegram),
+        ("VK - synthetic_user", ContactKind::Vk),
+        ("VK — synthetic_user", ContactKind::Vk),
+    ] {
+        let profile = classify(message(&format!("Люблю го.<br>{label}"))).unwrap();
+        assert_eq!(profile.contacts[0].kind, kind, "{label}");
+    }
 }
 
 #[test]
