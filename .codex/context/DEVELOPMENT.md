@@ -13,6 +13,11 @@
 SQLite, TUI и долговременного кеша нет. Команды запуска и выбор пользовательского
 конфига описаны в [README](../../README.md).
 
+Структурированные сведения извлекает `domain/metadata.rs`; `application::Cursor`
+хранит курсор наблюдения; `main` связывает `--watch` с `source` и `transport`.
+Контракт инкрементальных обновлений описан в
+[ARCHITECTURE.md#структурирование-и-обновления](ARCHITECTURE.md#структурирование-и-обновления).
+
 Выбор зависимостей и их потребители зафиксированы в
 [архитектуре](ARCHITECTURE.md#зависимости-текущего-cli).
 
@@ -69,10 +74,3 @@ Rust-код должен обрабатывать ожидаемые ошибк�
 [group:all](https://docs.renovatebot.com/presets-group/#all),
 [Rust toolchain manager](https://docs.renovatebot.com/modules/manager/rust-toolchain/),
 [CodeRabbit](https://docs.coderabbit.ai/reference/configuration).
-
-`domain/metadata.rs` извлекает явные сведения об авторе без дополнительных фильтров.
-`application::Cursor` владеет high-water mark, `source::normalize_after` проверяет
-мобильный пакет тем же нормализатором, что полный снимок. `--watch` в `main`
-последовательно вызывает инкрементальный транспорт, рендерер дописывает пакет
-без повторной сводки. Chrono feature `clock` необходим для часового пояса ОС
-на Windows/Linux/macOS; приложение не задаёт пользователю московское время.
