@@ -17,6 +17,13 @@ use tokio_util::sync::CancellationToken;
 struct Args {
     #[arg(
         long,
+        help = "Наблюдать новые анкеты через инкрементальный API; остановка: Ctrl+C"
+    )]
+    watch: bool,
+    #[arg(long, default_value = "20s", value_parser = parse_interval, help = "Интервал только с --watch: 30s, 1m; от 1s до 24h; сам не включает наблюдение")]
+    interval: std::time::Duration,
+    #[arg(
+        long,
         value_name = "ПУТЬ",
         help = "Явный TOML-файл; отсутствующий файл не создаётся"
     )]
@@ -77,7 +84,8 @@ async fn execute(
             )
         )
     );
-    let report = application::run(config.source.page(), cancellation, async {
+    let mut cursor = application::Cursor::default();
+    let messages = async {
         let bytes = progress::fetching(
             stderr,
             diagnostic,
@@ -85,8 +93,86 @@ async fn execute(
         )
         .await?;
         source::normalize(&config.source, &bytes)
-    })
+    }
     .await?;
+    let report = cursor
+        .process(config.source.page(), cancellation, messages)
+        .await?;
+    if !render_report(report, options, cancellation, true).await? || !args.watch {
+        return Ok(());
+    }
+    let _ = writeln!(
+        io::stderr().lock(),
+        "Наблюдение: интервал {} с; остановка Ctrl+C.",
+        args.interval.as_secs()
+    );
+    let mut delay = args.interval;
+    loop {
+        progress::waiting(stderr, diagnostic, tokio::time::sleep(delay)).await;
+        let result = async {
+            let bytes = progress::fetching(
+                stderr,
+                diagnostic,
+                transport::fetch_after(&config.source, cursor.value(), cancellation),
+            )
+            .await?;
+            let messages = source::normalize_after(&config.source, &bytes, cursor.value())?;
+            cursor
+                .process(config.source.page(), cancellation, messages)
+                .await
+        }
+        .await;
+        match result {
+            Ok(report) => {
+                delay = args.interval;
+                if !report.profiles.is_empty()
+                    && !render_report(report, options, cancellation, false).await?
+                {
+                    return Ok(());
+                }
+            }
+            Err(Failure::Cancelled) => return Err(Failure::Cancelled),
+            Err(error) => {
+                delay = delay
+                    .saturating_mul(2)
+                    .min(std::time::Duration::from_secs(3600))
+                    .max(args.interval);
+                let _ = writeln!(
+                    io::stderr().lock(),
+                    "Наблюдение: {error} Курсор сохранён; повтор через {} с.",
+                    delay.as_secs()
+                );
+            }
+        }
+    }
+}
+
+fn parse_interval(input: &str) -> Result<std::time::Duration, String> {
+    let boundary = input.char_indices().last().map(|(i, _)| i).unwrap_or(0);
+    let (number, unit) = input.split_at(boundary);
+    let factor = match unit {
+        "s" => 1u64,
+        "m" => 60,
+        "h" => 3600,
+        _ => return Err("Нужна длительность: 30s, 1m или 1h".into()),
+    };
+    let seconds = number
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(factor))
+        .filter(|n| (1..=86400).contains(n))
+        .ok_or_else(|| "Интервал должен быть от 1s до 24h".to_owned())?;
+    Ok(std::time::Duration::from_secs(seconds))
+}
+
+async fn render_report(
+    report: application::Report,
+    options: output::Options,
+    cancellation: &CancellationToken,
+    summary: bool,
+) -> Result<bool, Failure> {
+    let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let check = closed.clone();
     let render_cancellation = cancellation.clone();
     let output = spawn_output_thread(move || {
         let stdout = io::stdout();
@@ -94,13 +180,18 @@ async fn execute(
             inner: stdout.lock(),
             cancellation: render_cancellation.clone(),
         };
-        output_result(
-            output::render_with_options(&report, writer, options),
-            &render_cancellation,
-        )
+        let result = output::render_batch(&report, writer, options, summary);
+        if result
+            .as_ref()
+            .is_err_and(|error| error.kind() == io::ErrorKind::BrokenPipe)
+        {
+            closed.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        output_result(result, &render_cancellation)
     })
     .map_err(|_| Failure::Output)?;
-    output.await.map_err(|_| Failure::Output)?
+    output.await.map_err(|_| Failure::Output)??;
+    Ok(!check.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 fn spawn_output_thread(
@@ -205,6 +296,30 @@ async fn main() -> ExitCode {
 mod tests {
     use super::*;
 
+    #[test]
+    fn interval_validation_and_watch_are_independent() {
+        for (input, seconds) in [("20s", 20), ("30s", 30), ("1m", 60), ("24h", 86400)] {
+            assert_eq!(parse_interval(input).unwrap().as_secs(), seconds);
+        }
+        for input in [
+            "",
+            "я",
+            "0s",
+            "-1s",
+            "5",
+            "0m",
+            "25h",
+            "9999999999999999999999h",
+        ] {
+            assert!(parse_interval(input).is_err());
+        }
+        let args = Args::try_parse_from(["anketa-scout", "--interval", "1m"]).unwrap();
+        assert!(!args.watch);
+        assert_eq!(args.interval.as_secs(), 60);
+        let args = Args::try_parse_from(["anketa-scout", "--watch"]).unwrap();
+        assert!(args.watch);
+        assert_eq!(args.interval.as_secs(), 20);
+    }
     #[test]
     fn broken_pipe_is_success_and_other_output_failures_keep_code_eight() {
         let cancellation = CancellationToken::new();

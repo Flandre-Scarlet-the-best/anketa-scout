@@ -65,6 +65,13 @@ impl ThreadUrl {
     pub fn endpoint(&self) -> String {
         format!("https://2ch.org/{}/res/{}.json", self.board, self.thread)
     }
+
+    pub fn after_endpoint(&self, cursor: u64) -> String {
+        format!(
+            "https://2ch.org/api/mobile/v2/after/{}/{}/{cursor}",
+            self.board, self.thread
+        )
+    }
 }
 
 fn decode_percent_encoding(bytes: &[u8], strict: bool) -> Option<Vec<u8>> {
@@ -188,12 +195,21 @@ fn nullable_files<'de, D: serde::Deserializer<'de>>(
 }
 #[derive(Deserialize)]
 struct File {
+    #[serde(default, rename = "type", deserialize_with = "optional_media_type")]
+    media_type: Option<u64>,
     path: String,
     #[serde(default)]
     displayname: Option<String>,
     // Makaba передаёт приближённый целый размер в КиБ, а не Content-Length в байтах.
     #[serde(default, rename = "size")]
     size_kib: Option<u64>,
+}
+
+fn optional_media_type<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    // Новое необязательное поле не превращает ранее читаемый пост в ошибку треда.
+    Ok(Option::<serde_json::Value>::deserialize(deserializer)?.and_then(|value| value.as_u64()))
 }
 
 pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failure> {
@@ -218,6 +234,45 @@ pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failu
     }
     if posts.len() != envelope.posts_count {
         return Err(Failure::Partial);
+    }
+    normalize_posts(source, posts, true)
+}
+
+#[derive(Deserialize)]
+struct Updates {
+    result: u8,
+    posts: Vec<Post>,
+}
+
+pub fn normalize_after(
+    source: &ThreadUrl,
+    bytes: &[u8],
+    cursor: u64,
+) -> Result<Vec<Message>, Failure> {
+    if bytes.len() > MAX_BODY {
+        return Err(Failure::Limit);
+    }
+    let updates: Updates = serde_json::from_slice(bytes).map_err(|_| Failure::Format)?;
+    if updates.result != 1 {
+        return Err(Failure::Unavailable);
+    }
+    let messages = normalize_posts(source, updates.posts, false)?;
+    if messages.iter().any(|message| message.origin.post < cursor) {
+        return Err(Failure::Format);
+    }
+    Ok(messages
+        .into_iter()
+        .filter(|message| message.origin.post > cursor)
+        .collect())
+}
+
+fn normalize_posts(
+    source: &ThreadUrl,
+    posts: Vec<Post>,
+    require_op: bool,
+) -> Result<Vec<Message>, Failure> {
+    if posts.len() > MAX_POSTS {
+        return Err(Failure::Limit);
     }
     let mut seen = HashSet::new();
     let mut messages = Vec::with_capacity(posts.len());
@@ -248,6 +303,7 @@ pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failu
                 return Err(Failure::Format);
             }
             attachments.push(Attachment {
+                media_type: file.media_type,
                 name: file.displayname,
                 link: link.into(),
                 size_kib: file.size_kib,
@@ -256,8 +312,11 @@ pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failu
         let date = post
             .timestamp
             .and_then(|stamp| chrono::DateTime::from_timestamp(stamp, 0))
-            .map(|date| date.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-            .or(post.date.filter(|date| !date.trim().is_empty()));
+            .map(|date| {
+                date.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S %:z")
+                    .to_string()
+            });
         messages.push(Message {
             origin: Origin {
                 source: "2ch.org".to_owned(),
@@ -270,11 +329,13 @@ pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failu
             text,
             authored_text,
             date,
+            timestamp: post.timestamp,
+            source_date: post.date,
             attachments,
             introductory: post.num == source.thread,
         });
     }
-    if !seen.contains(&source.thread) {
+    if require_op && !seen.contains(&source.thread) {
         return Err(Failure::Partial);
     }
     Ok(messages)

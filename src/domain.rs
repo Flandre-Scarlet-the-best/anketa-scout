@@ -1,6 +1,9 @@
 use regex::Regex;
 use std::{collections::HashSet, sync::LazyLock};
 
+mod metadata;
+pub use metadata::{Age, Gender, Metadata};
+
 #[derive(Clone, Debug)]
 pub struct Origin {
     pub source: String,
@@ -12,6 +15,7 @@ pub struct Origin {
 
 #[derive(Clone, Debug)]
 pub struct Attachment {
+    pub media_type: Option<u64>,
     pub name: Option<String>,
     pub link: String,
     pub size_kib: Option<u64>,
@@ -24,6 +28,8 @@ pub struct Message {
     pub(crate) text: String,
     pub(crate) authored_text: String,
     pub date: Option<String>,
+    pub timestamp: Option<i64>,
+    pub source_date: Option<String>,
     pub attachments: Vec<Attachment>,
     pub(crate) introductory: bool,
 }
@@ -66,6 +72,7 @@ pub enum ContactKind {
     Discord,
     Email,
     Vk,
+    Max,
     Unknown,
 }
 
@@ -77,6 +84,7 @@ pub enum Ownership {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Contact {
+    pub assumed_platform: bool,
     pub kind: ContactKind,
     pub value: String,
     pub ownership: Ownership,
@@ -87,6 +95,8 @@ pub struct Contact {
 pub struct Profile {
     pub message: Message,
     pub contacts: Vec<Contact>,
+    pub metadata: Metadata,
+    pub description: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -107,14 +117,14 @@ static CONTACTS: LazyLock<Regex> = LazyLock::new(|| {
         r"(?ix)(?P<email>[a-z0-9.!\#$%&'*+/=?^_~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+)",
         r"|(?P<url>\b(?:https?://)?(?:t\.me|telegram\.me|vk\.com|vk\.ru)/[^\s<>]+)",
         r"|(?P<postfix>[a-z0-9_.\#]{2,32}[\x20\t]+(?:discord|дискорд)\b)",
-        r"|(?P<label>\b(?:telegram|телеграмм?|телега|тгшка|тг|tg|discord|дискордик|дискорд|диск|дс|вк|vk)\b[\x20\t]*[:=—-]?[\x20\t]*@?[a-z0-9_][a-z0-9_.\#()/:+~-]*)",
+        r"|(?P<label>\b(?:telegram|телеграмм?|телега|тгшка|тг|tg|discord|дискордик|дискорд|диск|дс|вк|vk|max|макс)\b[\x20\t]*[:=—-]?[\x20\t]*@?[a-z0-9_][a-z0-9_.\#()/:+~-]*)",
         r"|(?P<handle>@[a-z][a-z0-9_().+~-]*)",
         r"|(?P<unlabelled>(?m:^[\x20\t]*[a-z][a-z0-9_]*))"
     ))
 });
 static LABEL: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"(?ix)^(telegram|телеграмм?|телега|тгшка|тг|tg|discord|дискордик|дискорд|диск|дс|вк|vk)\s*[:=—-]?\s*",
+        r"(?ix)^(telegram|телеграмм?|телега|тгшка|тг|tg|discord|дискордик|дискорд|диск|дс|вк|vk|max|макс)\s*[:=—-]?\s*",
     )
 });
 static FOREIGN: LazyLock<Regex> = LazyLock::new(|| {
@@ -242,6 +252,10 @@ fn canonical(kind: ContactKind, raw: &str) -> Option<String> {
             });
             VALID.is_match(raw) && !raw.contains("..")
         }
+        ContactKind::Max => {
+            static VALID: LazyLock<Regex> = LazyLock::new(|| re(r"^[a-zA-Z][a-zA-Z0-9_]{1,63}$"));
+            VALID.is_match(raw)
+        }
         ContactKind::Vk => {
             static VALID: LazyLock<Regex> = LazyLock::new(|| re(r"^[a-zA-Z][a-zA-Z0-9_.]{1,63}$"));
             VALID.is_match(raw)
@@ -269,7 +283,7 @@ fn canonical(kind: ContactKind, raw: &str) -> Option<String> {
         return None;
     }
     Some(match kind {
-        ContactKind::Telegram => format!("@{}", raw.to_ascii_lowercase()),
+        ContactKind::Telegram | ContactKind::Max => format!("@{}", raw.to_ascii_lowercase()),
         ContactKind::Vk => raw.to_ascii_lowercase(),
         ContactKind::Email => {
             let (local, domain) = raw.split_once('@')?;
@@ -497,9 +511,10 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
     mark_matches(&mut noise, &authored, &DECORATION);
     let mut conjunction = vec![false; authored.len()];
     mark_matches(&mut conjunction, &authored, &CONJUNCTION);
-    let mut contacts = Vec::new();
+    let mut contacts: Vec<Contact> = Vec::new();
     let mut seen_contacts = HashSet::new();
     let mut previous_contact: Option<(usize, ContactKind)> = None;
+    let mut previous_assumed = false;
     let mut foreign = false;
     let mut unresolved = false;
     let mut mask_spans = Vec::new();
@@ -572,7 +587,8 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
             .map(|(start, end)| &authored[*start..*end])
             .unwrap_or("");
         let raw_match = &authored[m_start..m_end];
-        let (kind, mut raw) = if capture.kind == CaptureKind::Postfix {
+        let mut assumed_platform = false;
+        let (mut kind, mut raw) = if capture.kind == CaptureKind::Postfix {
             (
                 ContactKind::Discord,
                 raw_match.split_whitespace().next().unwrap().to_owned(),
@@ -614,6 +630,8 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
             }
             let kind = if name.starts_with('д') || name.starts_with("discord") {
                 ContactKind::Discord
+            } else if name.starts_with("max") || name.starts_with("макс") {
+                ContactKind::Max
             } else if name.starts_with("вк") || name.starts_with("vk") {
                 ContactKind::Vk
             } else {
@@ -638,12 +656,17 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
                 continue;
             }
             if continued.is_some() {
+                assumed_platform = previous_assumed;
                 (
                     ContactKind::Telegram,
                     raw_match.trim_start_matches('@').to_owned(),
                 )
             } else {
-                (ContactKind::Unknown, raw_match.to_owned())
+                assumed_platform = true;
+                (
+                    ContactKind::Telegram,
+                    raw_match.trim_start_matches('@').to_owned(),
+                )
             }
         };
         let suffix = &authored[m_end..];
@@ -672,7 +695,16 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
             };
             raw = value;
         }
-        let Some(value) = canonical(kind, &raw) else {
+        let canonical_value = canonical(kind, &raw).or_else(|| {
+            if assumed_platform {
+                kind = ContactKind::Unknown;
+                assumed_platform = false;
+                canonical(kind, &format!("@{}", raw.trim_start_matches('@')))
+            } else {
+                None
+            }
+        });
+        let Some(value) = canonical_value else {
             unresolved = true;
             mask_spans.push((m_start, end));
             remainder_cursor = end;
@@ -681,7 +713,9 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
         mask_spans.push((m_start, end));
         remainder_cursor = end;
         previous_contact = Some((end, kind));
+        previous_assumed = assumed_platform;
         let contact = Contact {
+            assumed_platform,
             kind,
             value,
             restoration: if instruction.is_empty() {
@@ -710,6 +744,12 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
         };
         if seen_contacts.insert((contact.kind, contact.value.clone())) {
             contacts.push(contact);
+        } else if !contact.assumed_platform
+            && let Some(existing) = contacts
+                .iter_mut()
+                .find(|item| item.kind == contact.kind && item.value == contact.value)
+        {
+            existing.assumed_platform = false;
         }
     }
     if contacts.is_empty() {
@@ -729,5 +769,47 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
     if CONTACT_LIST.is_match(&remainder) || !remainder.chars().any(char::is_alphanumeric) {
         return Err(Rejection::ContactOnly);
     }
-    Ok(Profile { message, contacts })
+    let metadata = Metadata::extract(&authored, &message.attachments);
+    let description = clean_description(&authored, &mask_spans);
+    Ok(Profile {
+        message,
+        contacts,
+        metadata,
+        description,
+    })
+}
+
+fn clean_description(text: &str, spans: &[(usize, usize)]) -> String {
+    static PREFIX: LazyLock<Regex> = LazyLock::new(|| {
+        re(r"(?i)(?:\b(?:мой|моя|почта|mailto|email|e-mail|контакт|связь)\s*[:=—-]?\s*)+$")
+    });
+    static REPLY: LazyLock<Regex> = LazyLock::new(|| re(r">>[0-9]+"));
+    let mut spans = spans.to_vec();
+    for (start, _) in &mut spans {
+        if let Some(prefix) = PREFIX.find(&text[..*start]) {
+            *start = prefix.start();
+        }
+    }
+    let masked = mask_text(text, &mut spans);
+    REPLY
+        .replace_all(&masked, "")
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let without_noise = DECORATION.replace_all(line, "");
+            if !without_noise.chars().any(char::is_alphanumeric)
+                || (line.starts_with('(')
+                    && line.ends_with(')')
+                    && !line[1..line.len() - 1].contains(['(', ')'])
+                    && INSTRUCTION
+                        .find(line)
+                        .is_some_and(|matched| matched.start() == 1))
+            {
+                None
+            } else {
+                Some(line.split_whitespace().collect::<Vec<_>>().join(" "))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

@@ -8,7 +8,7 @@
 `source` — URL и JSON/HTML Двача; `transport` — ограниченный HTTP;
 `config` — пользовательский TOML; `output` — безопасное представление;
 `diagnostics` — обезличенные JSON-события в stderr; `progress` — спиннер
-реального HTTP-запроса;
+реального HTTP-запроса и ожидания наблюдения;
 `main` связывает конкретные реализации и обрабатывает аргументы.
 SQLite, TUI и долговременного кеша нет. Команды запуска и выбор пользовательского
 конфига описаны в [README](../../README.md).
@@ -69,3 +69,10 @@ Rust-код должен обрабатывать ожидаемые ошибк�
 [group:all](https://docs.renovatebot.com/presets-group/#all),
 [Rust toolchain manager](https://docs.renovatebot.com/modules/manager/rust-toolchain/),
 [CodeRabbit](https://docs.coderabbit.ai/reference/configuration).
+
+`domain/metadata.rs` извлекает явные сведения об авторе без дополнительных фильтров.
+`application::Cursor` владеет high-water mark, `source::normalize_after` проверяет
+мобильный пакет тем же нормализатором, что полный снимок. `--watch` в `main`
+последовательно вызывает инкрементальный транспорт, рендерер дописывает пакет
+без повторной сводки. Chrono feature `clock` необходим для часового пояса ОС
+на Windows/Linux/macOS; приложение не задаёт пользователю московское время.

@@ -13,11 +13,13 @@ fn fixture() -> Report {
     first.date = Some("1970-01-01 00:00:00 UTC".into());
     first.attachments = vec![
         Attachment {
+            media_type: None,
             name: Some("棋 схема.png".into()),
             link: "https://2ch.org/test/src/100/one.png".into(),
             size_kib: Some(7),
         },
         Attachment {
+            media_type: None,
             name: None,
             link: "https://2ch.org/test/src/100/two.png".into(),
             size_kib: None,
@@ -110,8 +112,8 @@ fn full_tables_preserve_all_fields_and_order() {
         for profile in &report.profiles {
             let m = &profile.message;
             assert!(contains(&format!("пост №{}", m.origin.post)));
-            assert!(contains(&m.origin.link));
-            assert!(contains(m.text()));
+            assert!(!contains(&m.origin.link));
+            assert!(contains(&profile.description));
             if let Some(date) = &m.date {
                 assert!(contains(date));
             }
@@ -120,6 +122,7 @@ fn full_tables_preserve_all_fields_and_order() {
                     anketa_scout::domain::ContactKind::Telegram => "Telegram",
                     anketa_scout::domain::ContactKind::Discord => "Discord",
                     anketa_scout::domain::ContactKind::Email => "Почта",
+                    anketa_scout::domain::ContactKind::Max => "MAX",
                     anketa_scout::domain::ContactKind::Vk => "VK",
                     anketa_scout::domain::ContactKind::Unknown => "Платформа неизвестна",
                 };
@@ -134,14 +137,9 @@ fn full_tables_preserve_all_fields_and_order() {
                 }));
             }
             for a in &m.attachments {
-                assert!(contains(&a.link));
-                if let Some(name) = &a.name {
-                    assert!(contains(name));
-                }
-                if let Some(size) = a.size_kib {
-                    assert!(contains(&format!("{size} КиБ")));
-                }
+                assert!(!contains(&a.link));
             }
+            assert!(!text.contains("Вложение"));
         }
         let first = cells
             .iter()
@@ -255,6 +253,7 @@ fn untrusted_cells_cannot_forge_structure() {
     m.date = Some("Дата\n│подделка".into());
     m.origin.link = format!("https://2ch.org/{}", "x".repeat(200));
     m.attachments.push(Attachment {
+        media_type: None,
         name: Some("╞\nДата: файл".into()),
         link: "https://2ch.org/│\u{1b}[0m".into(),
         size_kib: Some(1),
@@ -277,7 +276,7 @@ fn untrusted_cells_cannot_forge_structure() {
         assert!(data.iter().any(|c| joined(c).contains("\\u{2502}")));
         assert!(
             data.iter()
-                .any(|c| joined(c).contains(&report.profiles[0].message.origin.link))
+                .all(|c| !joined(c).contains(&report.profiles[0].message.origin.link))
         );
         // Во всех строках ровно столько разделителей, сколько задал доверенный заголовок.
         let mut separators = 0;

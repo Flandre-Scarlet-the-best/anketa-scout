@@ -56,3 +56,59 @@ async fn offline_snapshot_classification() {
         accepted
     );
 }
+
+/// Доказательства локального живого пакета и ширин без раскрытия содержимого.
+#[test]
+#[ignore = "Нужен локальный каталог SCOUT_AUDIT_DIR с живыми ответами"]
+fn live_captures_normalize_and_render_without_exposing_content() {
+    let root = std::path::PathBuf::from(std::env::var_os("SCOUT_AUDIT_DIR").expect("Каталог"));
+    let source = ThreadUrl::parse("https://2ch.org/soc/res/5959967.json").unwrap();
+    let messages = normalize(&source, &std::fs::read(root.join("thread.json")).unwrap()).unwrap();
+    let last = messages.iter().map(|m| m.origin.post).max().unwrap();
+    let boundary = anketa_scout::source::normalize_after(
+        &source,
+        &std::fs::read(root.join(format!("after-{last}.json"))).unwrap(),
+        last,
+    )
+    .unwrap();
+    assert!(boundary.is_empty());
+    let empty = anketa_scout::source::normalize_after(
+        &source,
+        &std::fs::read(root.join(format!("after-{}.json", last + 1))).unwrap(),
+        last,
+    )
+    .unwrap();
+    assert!(empty.is_empty());
+    let report = application::Report {
+        source: source.page(),
+        processed: messages.len(),
+        profiles: messages
+            .into_iter()
+            .filter_map(|m| classify(m).ok())
+            .collect(),
+    };
+    for width in [40, 80, 120] {
+        let mut out = Vec::new();
+        anketa_scout::output::render_with_options(
+            &report,
+            &mut out,
+            anketa_scout::output::Options {
+                width: Some(width),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.contains("html#"));
+        assert!(!text.contains("Вложение"));
+        assert!(
+            text.lines()
+                .all(|line| console::measure_text_width(line) == usize::from(width))
+        );
+        std::fs::write(root.join(format!("width-{width}.txt")), text).unwrap();
+    }
+    println!(
+        "Проверены живые пакеты, граница, пустой ответ и ширины 40/80/120; анкет: {}",
+        report.profiles.len()
+    );
+}

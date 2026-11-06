@@ -280,9 +280,10 @@ fn unmatched_single_quote_keeps_the_rest_of_an_authored_profile() {
 }
 
 #[test]
-fn bare_handle_does_not_establish_contact_platform() {
+fn bare_signature_assumes_telegram_and_keeps_evidence() {
     let profile = classify(message("Произвольная заметка.<br>@synthetic_user")).unwrap();
-    assert_eq!(profile.contacts[0].kind, ContactKind::Unknown);
+    assert_eq!(profile.contacts[0].kind, ContactKind::Telegram);
+    assert!(profile.contacts[0].assumed_platform);
     assert!(classify(message("Произвольная заметка, читаю @synthetic_user")).is_err());
     assert_eq!(
         classify(message(
@@ -410,7 +411,14 @@ fn snapshot_restoration_shapes_keep_unknown_platform_explicit() {
         ),
     ] {
         let p = classify(message(html)).unwrap();
-        assert_eq!(p.contacts[0].kind, ContactKind::Unknown);
+        assert_eq!(
+            p.contacts[0].kind,
+            if html.contains("@") {
+                ContactKind::Telegram
+            } else {
+                ContactKind::Unknown
+            }
+        );
         assert_eq!(p.contacts[0].value, expected);
     }
     let p = classify(message("Заметка.<br>synthetic_user дискорд")).unwrap();
@@ -446,7 +454,11 @@ fn adjacent_contacts_keep_platform_and_independent_values() {
     assert_eq!(p.contacts[1].kind, ContactKind::Telegram);
     let p = classify(message("Заметка.<br>@synthetic_one, @synthetic_two")).unwrap();
     assert_eq!(p.contacts.len(), 2);
-    assert!(p.contacts.iter().all(|c| c.kind == ContactKind::Unknown));
+    assert!(
+        p.contacts
+            .iter()
+            .all(|c| c.kind == ContactKind::Telegram && c.assumed_platform)
+    );
 }
 
 #[test]

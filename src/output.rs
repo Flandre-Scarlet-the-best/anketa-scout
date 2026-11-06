@@ -169,93 +169,106 @@ pub fn render_with_options(
     mut output: impl Write,
     options: Options,
 ) -> io::Result<()> {
+    render_batch(report, &mut output, options, true)
+}
+
+pub fn render_batch(
+    report: &Report,
+    mut output: impl Write,
+    options: Options,
+    summary: bool,
+) -> io::Result<()> {
     // Минимальная поддерживаемая ширина оставляет место рамке, маркеру,
     // изолирующему пробелу и широкой графеме без обрезания данных.
     let width = options.width.unwrap_or(96).max(8);
     let palette = options.palette;
-    field(
-        &mut output,
-        width,
-        "Anketa Scout",
-        match options.view {
-            View::Full => "Полный просмотр анкет",
-            View::Compact => "Компактный обзор · текст сокращён; полный просмотр: --view full",
-        },
-        Role::Brand,
-        palette,
-    )?;
-    field(
-        &mut output,
-        width,
-        "Источник",
-        &cell_text(&report.source, false),
-        Role::Contact,
-        palette,
-    )?;
-    if width >= 24 {
-        let mut summary = table(width);
-        summary.set_header(vec!["Сообщений", "Анкет"]).add_row(vec![
-            report.processed.to_string(),
-            report.profiles.len().to_string(),
-        ]);
-        write_table(
-            &mut output,
-            summary,
-            &[Role::Metadata, Role::Success],
-            palette,
-        )?;
-    } else {
+    if summary {
         field(
             &mut output,
             width,
-            "Сообщений",
-            &report.processed.to_string(),
+            "Anketa Scout",
+            match options.view {
+                View::Full => "Полный просмотр анкет",
+                View::Compact => "Компактный обзор · текст сокращён; полный просмотр: --view full",
+            },
+            Role::Brand,
+            palette,
+        )?;
+        field(
+            &mut output,
+            width,
+            "Время",
+            "Локальное время ОС; смещение указано у даты",
             Role::Metadata,
             palette,
         )?;
-        field(
-            &mut output,
-            width,
-            "Анкет",
-            &report.profiles.len().to_string(),
-            Role::Success,
-            palette,
-        )?;
-    }
-    if report.processed == 0 || report.profiles.is_empty() {
-        field(
-            &mut output,
-            width,
-            "Результат",
-            if report.processed == 0 {
-                "Источник вернул пустой тред."
-            } else {
-                "Самостоятельных анкет с собственным контактом не найдено."
-            },
-            Role::Warning,
-            palette,
-        )?;
+        if width >= 24 {
+            let mut summary = table(width);
+            summary.set_header(vec!["Сообщений", "Анкет"]).add_row(vec![
+                report.processed.to_string(),
+                report.profiles.len().to_string(),
+            ]);
+            write_table(
+                &mut output,
+                summary,
+                &[Role::Metadata, Role::Success],
+                palette,
+            )?;
+        } else {
+            field(
+                &mut output,
+                width,
+                "Сообщений",
+                &report.processed.to_string(),
+                Role::Metadata,
+                palette,
+            )?;
+            field(
+                &mut output,
+                width,
+                "Анкет",
+                &report.profiles.len().to_string(),
+                Role::Success,
+                palette,
+            )?;
+        }
+        if report.processed == 0 || report.profiles.is_empty() {
+            field(
+                &mut output,
+                width,
+                "Результат",
+                if report.processed == 0 {
+                    "Источник вернул пустой тред."
+                } else {
+                    "Самостоятельных анкет с собственным контактом не найдено."
+                },
+                Role::Warning,
+                palette,
+            )?;
+        }
     }
     for (index, profile) in report.profiles.iter().enumerate() {
         let message = &profile.message;
         let post = format!("Анкета {} · пост №{}", index + 1, message.origin.post);
         let date = message.date.as_deref().map(|s| cell_text(s, false));
-        let link = cell_text(&message.origin.link, false);
+        let attributes = cell_text(&metadata_text(&profile.metadata), false);
         let contacts: Vec<_> = profile
             .contacts
             .iter()
             .map(|contact| {
                 let kind = match contact.kind {
+                    ContactKind::Telegram if contact.assumed_platform => "Telegram (предп.)",
                     ContactKind::Telegram => "Telegram",
                     ContactKind::Discord => "Discord",
                     ContactKind::Email => "Почта",
+                    ContactKind::Max => "MAX",
                     ContactKind::Vk => "VK",
                     ContactKind::Unknown => "Платформа неизвестна",
                 };
                 (kind, cell_text(&contact.value, false))
             })
             .collect();
-        let text = cell_text(&message.text, true);
+        let text = cell_text(&profile.description, true);
         let text = match options.view {
             View::Full => text,
             View::Compact => preview(&text),
@@ -271,7 +284,7 @@ pub fn render_with_options(
                 },
             ]);
             let metadata = format!(
-                "{post}\n{link}{}",
+                "{post}\n{attributes}{}",
                 date.as_ref()
                     .map(|s| format!("\nДата: {s}"))
                     .unwrap_or_default()
@@ -304,14 +317,16 @@ pub fn render_with_options(
                 Role::Post,
                 palette,
             )?;
-            field(
-                &mut output,
-                width,
-                "Оригинал",
-                &link,
-                Role::Contact,
-                palette,
-            )?;
+            if !attributes.is_empty() {
+                field(
+                    &mut output,
+                    width,
+                    "Сведения",
+                    &attributes,
+                    Role::Metadata,
+                    palette,
+                )?;
+            }
             if let Some(date) = date {
                 field(&mut output, width, "Дата", &date, Role::Metadata, palette)?;
             }
@@ -330,26 +345,40 @@ pub fn render_with_options(
                 palette,
             )?;
         }
-        // Вложения остаются полными даже в обзоре: ни ссылки, ни имена не теряются.
-        for (number, attachment) in message.attachments.iter().enumerate() {
-            let mut value = cell_text(&attachment.link, false);
-            if let Some(name) = &attachment.name {
-                value.push_str(&format!("\nИмя: {}", cell_text(name, false)));
-            }
-            if let Some(size) = attachment.size_kib {
-                value.push_str(&format!("\nРазмер: {size} КиБ"));
-            }
-            field(
-                &mut output,
-                width,
-                &format!("Вложение {}", number + 1),
-                &value,
-                Role::Attachment,
-                palette,
-            )?;
-        }
     }
     output.flush()
+}
+
+fn metadata_text(m: &crate::domain::Metadata) -> String {
+    use crate::domain::{Age, Gender};
+    let mut fields = Vec::new();
+    fields.push(
+        match m.gender {
+            Some(Gender::Male) => "Парень",
+            Some(Gender::Female) => "Девушка",
+            None => "Пол не указан",
+        }
+        .to_owned(),
+    );
+    if let Some(age) = m.age {
+        fields.push(match age {
+            Age::Exact(n) => format!("Возраст: {n}"),
+            Age::AtLeast(n) => format!("Возраст: {n}+"),
+        });
+    }
+    if let Some(place) = &m.location {
+        fields.push(place.clone());
+    }
+    if let Some(online) = m.online {
+        fields.push(format!("Онлайн: {}", if online { "да" } else { "нет" }));
+    }
+    if m.images > 0 {
+        fields.push(format!("Фото: {}", m.images));
+    }
+    if m.videos > 0 {
+        fields.push(format!("Видео: {}", m.videos));
+    }
+    fields.join("\n")
 }
 
 #[cfg(test)]

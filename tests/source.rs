@@ -30,7 +30,17 @@ fn confirmed_json_shape_preserves_origin_date_files_and_raw_body() {
         message.original(),
         "Люблю <b>го</b> &amp; шахматы.<br>Тг: synthetic_user"
     );
-    assert_eq!(message.date.as_deref(), Some("1970-01-01 00:00:00 UTC"));
+    assert_eq!(
+        message.date.as_deref(),
+        Some(
+            chrono::DateTime::from_timestamp(0, 0)
+                .unwrap()
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M:%S %:z")
+                .to_string()
+                .as_str()
+        )
+    );
     assert_eq!(
         message.attachments[0].link,
         "https://2ch.org/test/src/100/image.png"
@@ -253,12 +263,12 @@ fn post_count_and_attachment_limits_accept_boundary_then_reject_overflow() {
 }
 
 #[test]
-fn date_text_is_used_only_when_timestamp_is_unavailable() {
+fn invalid_or_missing_timestamp_never_invents_local_date() {
     let mut input = envelope(vec![post(100, "Текст")]);
     input["threads"][0]["posts"][0]["date"] = json!("Дата из источника");
     let messages = normalize(&source(), &serde_json::to_vec(&input).unwrap()).unwrap();
-    assert_eq!(messages[0].date.as_deref(), Some("Дата из источника"));
+    assert_eq!(messages[0].date, None);
     input["threads"][0]["posts"][0]["timestamp"] = json!(i64::MAX);
     let messages = normalize(&source(), &serde_json::to_vec(&input).unwrap()).unwrap();
-    assert_eq!(messages[0].date.as_deref(), Some("Дата из источника"));
+    assert_eq!(messages[0].date, None);
 }

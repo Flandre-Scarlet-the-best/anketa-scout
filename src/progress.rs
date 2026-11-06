@@ -6,16 +6,17 @@ struct Spinner(ProgressBar);
 
 impl Spinner {
     fn start(target: ProgressDrawTarget, palette: Palette) -> Self {
+        Self::labelled(target, palette, "Получение треда…")
+    }
+
+    fn labelled(target: ProgressDrawTarget, palette: Palette, label: &str) -> Self {
         let bar = ProgressBar::with_draw_target(None, target);
         bar.set_style(
             ProgressStyle::default_spinner()
                 .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
         );
-        // Название операции доверенное и описывает только реально выполняемый запрос.
-        let template = format!(
-            "{{spinner}} {}",
-            palette.paint(Role::Loading, "Получение треда…")
-        );
+        // Название операции доверенное: запрос или ожидание следующего опроса.
+        let template = format!("{{spinner}} {}", palette.paint(Role::Loading, label));
         if let Ok(style) = bar.style().template(&template) {
             bar.set_style(style);
         }
@@ -45,6 +46,16 @@ pub async fn fetching<T>(
         ProgressDrawTarget::hidden()
     };
     with_target(target, palette, request).await
+}
+
+pub async fn waiting<T>(terminal: Terminal, palette: Palette, wait: impl Future<Output = T>) -> T {
+    let target = if terminal.animation() {
+        ProgressDrawTarget::stderr()
+    } else {
+        ProgressDrawTarget::hidden()
+    };
+    let _spinner = Spinner::labelled(target, palette, "Ожидание новых анкет… Ctrl+C — остановка");
+    wait.await
 }
 
 async fn with_target<T>(

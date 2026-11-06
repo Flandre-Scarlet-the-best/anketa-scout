@@ -12,6 +12,36 @@ pub struct Report {
     pub profiles: Vec<Profile>,
 }
 
+#[derive(Default)]
+pub struct Cursor(u64);
+
+impl Cursor {
+    pub fn value(&self) -> u64 {
+        self.0
+    }
+
+    pub async fn process(
+        &mut self,
+        source: String,
+        cancellation: &CancellationToken,
+        messages: Vec<Message>,
+    ) -> Result<Report, Failure> {
+        let next = messages
+            .iter()
+            .map(|message| message.origin.post)
+            .max()
+            .unwrap_or(self.0)
+            .max(self.0);
+        let messages = messages
+            .into_iter()
+            .filter(|message| message.origin.post > self.0)
+            .collect();
+        let report = run(source, cancellation, async { Ok(messages) }).await?;
+        self.0 = next;
+        Ok(report)
+    }
+}
+
 pub async fn run(
     source: String,
     cancellation: &CancellationToken,

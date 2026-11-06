@@ -1,6 +1,6 @@
 [package]
 name = "anketa-scout"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.99.1"
 description = "Поиск самостоятельных анкет в настроенном треде"
@@ -8,7 +8,7 @@ license = "AGPL-3.0-only"
 repository = "https://github.com/Flandre-Scarlet-the-best/anketa-scout"
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 clap = { version = "4", features = ["derive"] }
 comfy-table = { version = "8", default-features = false }
 console = "0.16"
