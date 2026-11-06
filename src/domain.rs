@@ -649,6 +649,31 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
                 kind,
                 raw_match[label.end()..].trim_start_matches('@').to_owned(),
             )
+        } else if let Some((offset, label)) = {
+            static PRECEDING_LABEL: LazyLock<Regex> = LazyLock::new(|| {
+                re(
+                    r"(?i)(?:^|\n)[\t ]*(discord|дискорд|дс|max|макс|vk|вк|telegram|тг|tg)[\t ]*:[\t ]*\n[\t ]*$",
+                )
+            });
+            let boundary = line_breaks.partition_point(|index| *index < m_start);
+            let offset = boundary
+                .checked_sub(2)
+                .map_or(0, |index| line_breaks[index] + 1);
+            (m_start - offset <= 512)
+                .then(|| PRECEDING_LABEL.captures(&authored[offset..m_start]))
+                .flatten()
+                .map(|label| (offset, label))
+        } {
+            let matched = label.get(0).unwrap();
+            mask_spans.push((offset + matched.start(), offset + matched.end()));
+            let label = label[1].to_lowercase();
+            let kind = match label.as_str() {
+                "discord" | "дискорд" | "дс" => ContactKind::Discord,
+                "max" | "макс" => ContactKind::Max,
+                "vk" | "вк" => ContactKind::Vk,
+                _ => ContactKind::Telegram,
+            };
+            (kind, raw_match.trim_start_matches('@').to_owned())
         } else {
             static SEPARATOR: LazyLock<Regex> =
                 LazyLock::new(|| re(r"^\s*[,;/]*\s*(?:(?:и|или)\s*)?$"));

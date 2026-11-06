@@ -332,3 +332,23 @@ fn local_time_zones_and_dst_are_checked_in_fresh_processes() {
         );
     }
 }
+
+#[test]
+fn explicit_platform_on_preceding_line_keeps_priority_and_is_not_description() {
+    use anketa_scout::domain::ContactKind;
+    for (label, kind) in [
+        ("Discord", ContactKind::Discord),
+        ("MAX", ContactKind::Max),
+        ("VK", ContactKind::Vk),
+        ("ТГ", ContactKind::Telegram),
+    ] {
+        let p = classify(message(&format!(
+            "Люблю го.<br>{label}:<br>@synthetic_user"
+        )))
+        .unwrap();
+        assert_eq!(p.contacts[0].kind, kind);
+        assert!(!p.contacts[0].assumed_platform);
+        assert_eq!(p.description, "Люблю го.");
+        assert!(classify(message(&format!("{label}:<br>@synthetic_user"))).is_err());
+    }
+}
