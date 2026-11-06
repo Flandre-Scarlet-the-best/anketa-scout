@@ -149,28 +149,21 @@ fn contact_kind_from_label(label: &str) -> ContactKind {
     }
 }
 
+const MAX_CONTACT_LABEL_CONTEXT: usize = 512;
+
 fn preceding_contact_label(
     text: &str,
     position: usize,
     line_breaks: &[usize],
 ) -> Option<(usize, usize, ContactKind)> {
     let current_break = line_breaks.partition_point(|index| *index < position);
-    let current_start = current_break
-        .checked_sub(1)
-        .map_or(0, |index| line_breaks[index] + 1);
-    let prefix = DECORATION.replace_all(&text[current_start..position], "");
-    if prefix.chars().any(char::is_alphanumeric) {
-        return None;
-    }
-    let previous_break = line_breaks
-        .partition_point(|index| *index < position)
-        .checked_sub(1)?;
+    let previous_break = current_break.checked_sub(1)?;
     let line_end = line_breaks[previous_break];
     let line_start = previous_break
         .checked_sub(1)
         .map_or(0, |index| line_breaks[index] + 1);
     let line = &text[line_start..line_end];
-    if line.len() > 512 {
+    if line.len() > MAX_CONTACT_LABEL_CONTEXT {
         return None;
     }
     let leading = line.len() - line.trim_start().len();
@@ -178,6 +171,14 @@ fn preceding_contact_label(
     let label = LABEL.captures(trimmed)?;
     let matched = label.get(0)?;
     if matched.end() != trimmed.len() {
+        return None;
+    }
+    let current_start = line_end + 1;
+    if position - current_start > MAX_CONTACT_LABEL_CONTEXT {
+        return None;
+    }
+    let prefix = DECORATION.replace_all(&text[current_start..position], "");
+    if prefix.chars().any(char::is_alphanumeric) {
         return None;
     }
     Some((
@@ -683,9 +684,18 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
         } else if capture.kind == CaptureKind::Label {
             let label = LABEL.captures(raw_match).unwrap();
             let matched = label.get(0).unwrap();
-            if label[1].to_lowercase() == "дс"
+            let name = label[1].to_lowercase();
+            let tail = &raw_match[matched.end()..];
+            let explicit_separator = matched
+                .as_str()
+                .chars()
+                .any(|character| matches!(character, ':' | '=' | '—' | '-'));
+            if (name == "дс"
                 && !matched.as_str().contains(':')
-                && raw_match[matched.end()..].starts_with(|c: char| c.is_ascii_digit())
+                && tail.starts_with(|character: char| character.is_ascii_digit()))
+                || (matches!(name.as_str(), "max" | "макс")
+                    && !explicit_separator
+                    && !tail.starts_with('@'))
             {
                 continue;
             }
@@ -950,12 +960,14 @@ fn clean_description(
         let start = matched.start();
         let end = matched.end();
         let instruction = &text[start + 1..end - 1];
-        let follows_contact = contact_spans.iter().any(|(_, contact_end)| {
-            *contact_end <= start
-                && text[*contact_end..start]
+        let follows_contact = contact_spans
+            .partition_point(|(_, contact_end)| *contact_end <= start)
+            .checked_sub(1)
+            .is_some_and(|index| {
+                text[contact_spans[index].1..start]
                     .chars()
                     .all(|character| !character.is_alphanumeric())
-        });
+            });
         if follows_contact && is_contact_restoration_instruction(instruction) {
             let end = if text
                 .as_bytes()

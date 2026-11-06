@@ -27,6 +27,22 @@ fn short_profile_needs_no_demographics_or_at_sign() {
 }
 
 #[test]
+fn ambiguous_max_words_are_not_contacts_or_hidden_text() {
+    assert!(classify(message("Люблю играть в Max Payne")).is_err());
+
+    let profile = classify(message(
+        "Меня зовут Макс 25. Люблю го.<br>ТГ: synthetic_user",
+    ))
+    .unwrap();
+    assert!(profile.description.contains("Макс 25"));
+    assert_eq!(profile.contacts.len(), 1);
+    assert_eq!(profile.contacts[0].kind, ContactKind::Telegram);
+
+    let explicit = classify(message("Люблю го.<br>MAX: synthetic_user")).unwrap();
+    assert_eq!(explicit.contacts[0].kind, ContactKind::Max);
+}
+
+#[test]
 fn natural_goal_without_search_keyword_is_sufficient() {
     let profile = classify(message(
         "С удовольствием поговорю о книгах.<br>Почта: reader@example.invalid",
