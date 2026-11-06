@@ -87,14 +87,59 @@ async fn execute(
         source::normalize(&config.source, &bytes)
     })
     .await?;
-    output_result(output::render_with_options(
-        &report,
-        io::stdout().lock(),
-        options,
-    ))
+    let render_cancellation = cancellation.clone();
+    let output = spawn_output_thread(move || {
+        let stdout = io::stdout();
+        let writer = CancellableWriter {
+            inner: stdout.lock(),
+            cancellation: render_cancellation.clone(),
+        };
+        output_result(
+            output::render_with_options(&report, writer, options),
+            &render_cancellation,
+        )
+    })
+    .map_err(|_| Failure::Output)?;
+    output.await.map_err(|_| Failure::Output)?
 }
 
-fn output_result(result: io::Result<()>) -> Result<(), Failure> {
+fn spawn_output_thread(
+    render: impl FnOnce() -> Result<(), Failure> + Send + 'static,
+) -> io::Result<tokio::sync::oneshot::Receiver<Result<(), Failure>>> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("anketa-scout-output".into())
+        .spawn(move || {
+            let _ = sender.send(render());
+        })?;
+    Ok(receiver)
+}
+
+struct CancellableWriter<W> {
+    inner: W,
+    cancellation: CancellationToken,
+}
+
+impl<W: Write> Write for CancellableWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.cancellation.is_cancelled() {
+            return Err(io::Error::other("Вывод отменён"));
+        }
+        self.inner.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.cancellation.is_cancelled() {
+            return Err(io::Error::other("Вывод отменён"));
+        }
+        self.inner.flush()
+    }
+}
+
+fn output_result(result: io::Result<()>, cancellation: &CancellationToken) -> Result<(), Failure> {
+    if cancellation.is_cancelled() {
+        return Err(Failure::Cancelled);
+    }
     match result {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
@@ -162,12 +207,62 @@ mod tests {
 
     #[test]
     fn broken_pipe_is_success_and_other_output_failures_keep_code_eight() {
-        assert!(output_result(Err(io::ErrorKind::BrokenPipe.into())).is_ok());
+        let cancellation = CancellationToken::new();
+        assert!(output_result(Err(io::ErrorKind::BrokenPipe.into()), &cancellation).is_ok());
         assert_eq!(
-            output_result(Err(io::ErrorKind::PermissionDenied.into())),
+            output_result(Err(io::ErrorKind::PermissionDenied.into()), &cancellation),
             Err(Failure::Output)
         );
         assert_eq!(Failure::Output.code(), 8);
         assert_eq!(Failure::Cancelled.code(), 130);
+    }
+
+    #[test]
+    fn cancelled_writer_stops_rendering() {
+        let cancellation = CancellationToken::new();
+        let mut writer = CancellableWriter {
+            inner: Vec::new(),
+            cancellation: cancellation.clone(),
+        };
+        cancellation.cancel();
+        let error = writer.write_all(b"result").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(
+            output_result(Err(error), &cancellation),
+            Err(Failure::Cancelled)
+        );
+    }
+
+    #[test]
+    fn cancellation_takes_priority_over_broken_pipe() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert_eq!(
+            output_result(Err(io::ErrorKind::BrokenPipe.into()), &cancellation),
+            Err(Failure::Cancelled)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_output_does_not_wait_for_a_blocked_writer_thread() {
+        let (release, blocked) = std::sync::mpsc::channel();
+        let output = spawn_output_thread(move || {
+            blocked.recv().unwrap();
+            Ok(())
+        })
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let signal = cancellation.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            signal.cancel();
+        });
+
+        let result = tokio::select! {
+            result = output => Some(result.unwrap()),
+            _ = cancellation.cancelled() => None,
+        };
+        assert_eq!(result, None);
+        release.send(()).unwrap();
     }
 }

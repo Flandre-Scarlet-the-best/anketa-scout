@@ -11,10 +11,13 @@ use tokio_util::sync::CancellationToken;
 async fn one_post_is_one_profile_and_contacts_are_never_merged() {
     let mut description = message("Люблю шахматы.");
     description.origin.post = 101;
+    description.origin.link = format!("{}#101", source().page());
     let mut addition = message("Забыл контакт, вот @synthetic_user");
     addition.origin.post = 102;
+    addition.origin.link = format!("{}#102", source().page());
     let mut complete = message("Люблю го.<br>Тг: other_synthetic");
     complete.origin.post = 103;
+    complete.origin.link = format!("{}#103", source().page());
     let report = run(source().page(), &CancellationToken::new(), async {
         Ok(vec![description, addition, complete])
     })
@@ -44,6 +47,50 @@ async fn failures_propagate_without_becoming_zero_profiles() {
         .await;
         assert_eq!(result.err(), Some(failure));
     }
+}
+
+#[tokio::test]
+async fn report_rejects_messages_from_a_different_source() {
+    let other = "https://2ch.org/test/res/200.html".to_owned();
+    let result = run(other, &CancellationToken::new(), async {
+        Ok(vec![message("Люблю го.<br>Тг: synthetic_user")])
+    })
+    .await;
+    assert!(matches!(result, Err(Failure::Format)));
+}
+
+#[tokio::test]
+async fn report_rejects_forged_origin_fields_and_noncanonical_links() {
+    for forged in 0..5 {
+        let mut input = message("Люблю го.<br>Тг: synthetic_user");
+        match forged {
+            0 => input.origin.source = "evil.invalid".into(),
+            1 => input.origin.board = "other".into(),
+            2 => input.origin.thread = 200,
+            3 => input.origin.post += 1,
+            4 => input.origin.link.push_str("suffix"),
+            _ => unreachable!(),
+        }
+        let result = run(source().page(), &CancellationToken::new(), async {
+            Ok(vec![input])
+        })
+        .await;
+        assert!(matches!(result, Err(Failure::Format)), "case {forged}");
+    }
+}
+
+#[tokio::test]
+async fn cancellation_during_classification_is_observed_before_success() {
+    let cancellation = CancellationToken::new();
+    let cancel = cancellation.clone();
+    let cancel_task = tokio::spawn(async move {
+        tokio::task::yield_now().await;
+        cancel.cancel();
+    });
+    let messages = vec![message("Люблю го.<br>Тг: synthetic_user"); 256];
+    let result = run(source().page(), &cancellation, async { Ok(messages) }).await;
+    assert!(matches!(result, Err(Failure::Cancelled)));
+    cancel_task.await.unwrap();
 }
 
 #[tokio::test]

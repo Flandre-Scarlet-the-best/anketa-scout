@@ -18,7 +18,7 @@ fn confirmed_json_shape_preserves_origin_date_files_and_raw_body() {
     )
     .unwrap();
     assert_eq!(messages.len(), 2);
-    assert!(messages[0].introductory);
+    assert!(messages[0].is_introductory());
     let message = &messages[1];
     assert_eq!(message.origin.source, "2ch.org");
     assert_eq!(message.origin.board, "test");
@@ -131,11 +131,16 @@ fn attachment_urls_cannot_change_host_or_escape_board() {
         "https://evil.invalid/x",
         "//127.0.0.1/x",
         "/test/src/../secret",
+        "/test/src/file%",
         "/test/src/x?secret=hidden",
         "/other/src/x",
         "/test/src/%2e%2e/secret",
         "/test/src/%2E%2E/%2e%2e/secret",
         "/test/src/.%2e/secret",
+        "/test/src/%2f..%2fsecret",
+        "/test/src/%2F..%2Fsecret",
+        "/test/src/%5c..%5csecret",
+        "/test/src/%252f%252e%252e%252fsecret",
     ] {
         let mut input = envelope(vec![post(100, "Текст")]);
         input["threads"][0]["posts"][0]["files"] = json!([{"path":path}]);
@@ -144,6 +149,20 @@ fn attachment_urls_cannot_change_host_or_escape_board() {
             Failure::Format,
             "{path}"
         );
+    }
+}
+
+#[test]
+fn encoded_percent_is_preserved_in_safe_attachment_filenames() {
+    for path in [
+        "/test/src/100/file%25report.png",
+        "/test/src/100/file%25report%20final.png",
+    ] {
+        let mut input = envelope(vec![post(100, "Текст")]);
+        input["threads"][0]["posts"][0]["files"] = json!([{"path":path}]);
+        let messages = normalize(&source(), &serde_json::to_vec(&input).unwrap()).unwrap();
+        assert_eq!(messages[0].attachments.len(), 1, "{path}");
+        assert!(messages[0].attachments[0].link.contains("%25report"));
     }
 }
 

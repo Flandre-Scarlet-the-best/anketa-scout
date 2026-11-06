@@ -1,5 +1,5 @@
 use regex::Regex;
-use std::sync::LazyLock;
+use std::{collections::HashSet, sync::LazyLock};
 
 #[derive(Clone, Debug)]
 pub struct Origin {
@@ -25,7 +25,7 @@ pub struct Message {
     pub(crate) authored_text: String,
     pub date: Option<String>,
     pub attachments: Vec<Attachment>,
-    pub introductory: bool,
+    pub(crate) introductory: bool,
 }
 
 impl Message {
@@ -47,9 +47,20 @@ impl Message {
     pub fn authored_text(&self) -> &str {
         &self.authored_text
     }
+
+    /// Возвращает установленный адаптером признак вступительного поста.
+    ///
+    /// ```compile_fail
+    /// fn forge(message: &mut anketa_scout::domain::Message) {
+    ///     message.introductory = false;
+    /// }
+    /// ```
+    pub fn is_introductory(&self) -> bool {
+        self.introductory
+    }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ContactKind {
     Telegram,
     Discord,
@@ -98,7 +109,7 @@ static CONTACTS: LazyLock<Regex> = LazyLock::new(|| {
         r"|(?P<postfix>[a-z0-9_.\#]{2,32}[\x20\t]+(?:discord|дискорд)\b)",
         r"|(?P<label>\b(?:telegram|телеграмм?|телега|тгшка|тг|tg|discord|дискордик|дискорд|диск|дс|вк|vk)\b[\x20\t]*[:=—-]?[\x20\t]*@?[a-z0-9_][a-z0-9_.\#()/:+~-]*)",
         r"|(?P<handle>@[a-z][a-z0-9_().+~-]*)",
-        r"|(?P<unlabelled>(?m:^[\x20\t]*[a-z][a-z0-9_]*(?:[\x20\t]+[a-z0-9_]+)*))"
+        r"|(?P<unlabelled>(?m:^[\x20\t]*[a-z][a-z0-9_]*))"
     ))
 });
 static LABEL: LazyLock<Regex> = LazyLock::new(|| {
@@ -108,14 +119,17 @@ static LABEL: LazyLock<Regex> = LazyLock::new(|| {
 });
 static FOREIGN: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"(?ix)\b(?:его|её|ее|чужой|контакт\s+друга|пример|например|смотрю|читаю|мой\s+канал|наш\s+сервер)\s*[:—-]?\s*$",
+        r"(?ix)\b(?:его|её|ее|чужой|контакт\s+друга|пример|например|смотрю|читаю|мой\s+канал|наш\s+сервер)\s*[:—-]?\s*",
     )
 });
+static SELF_OWNERSHIP: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)мой"));
 static DECORATION: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"(?ix)\b(?:мой|моя|мои|вот|пишите|сюда|мне|контакт|связь|почта|mailto|email|e-mail|telegram|телеграмм?|тг|tg|дискорд|discord|забыл|забыла|добавить|добавлю|к\s+прошлому\s+посту)\b",
+        r"(?ix)\b(?:мой|моя|мои|вот|пишите|сюда|мне|в\s+(?:лс|личку)|контакт|связь|почта|mailto|email|e-mail|telegram|телеграмм?|тг|tg|дискорд|discord|забыл|забыла|добавить|добавлю|к\s+прошлому\s+посту)\b",
     )
 });
+static CONJUNCTION: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)\b(?:и|или)\b"));
+static NON_SEPARATOR: LazyLock<Regex> = LazyLock::new(|| re(r"^[^\s\p{P}]$"));
 static INSTRUCTION: LazyLock<Regex> = LazyLock::new(|| {
     re(
         r"(?i)(?:убери(?:те)?|убрать|удали(?:те)?|удалить|без\s+(?:пробел|нижн)|замени(?:те)?)[^\n]*",
@@ -210,7 +224,6 @@ fn canonical(kind: ContactKind, raw: &str) -> Option<String> {
         ContactKind::Telegram => {
             static VALID: LazyLock<Regex> = LazyLock::new(|| re(r"^[a-zA-Z][a-zA-Z0-9_]{4,31}$"));
             VALID.is_match(raw)
-                && !raw.to_lowercase().ends_with("bot")
                 && !matches!(
                     raw.to_lowercase().as_str(),
                     "joinchat"
@@ -231,7 +244,13 @@ fn canonical(kind: ContactKind, raw: &str) -> Option<String> {
         }
         ContactKind::Vk => {
             static VALID: LazyLock<Regex> = LazyLock::new(|| re(r"^[a-zA-Z][a-zA-Z0-9_.]{1,63}$"));
-            VALID.is_match(raw) && !raw.starts_with("club") && !raw.starts_with("public")
+            VALID.is_match(raw)
+                && !raw
+                    .get(..4)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("club"))
+                && !raw
+                    .get(..6)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("public"))
         }
         ContactKind::Unknown => {
             static VALID: LazyLock<Regex> = LazyLock::new(|| re(r"^@?[a-zA-Z][a-zA-Z0-9_]{1,63}$"));
@@ -300,12 +319,111 @@ fn exclude_single_quotes(text: &str) -> String {
     result
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CaptureKind {
+    Email,
+    Url,
+    Postfix,
+    Label,
+    Handle,
+    Unlabelled,
+}
+
+struct ContactCapture {
+    start: usize,
+    end: usize,
+    kind: CaptureKind,
+}
+
+fn mark_matches(mask: &mut [bool], text: &str, regex: &Regex) {
+    for matched in regex.find_iter(text) {
+        mask[matched.start()..matched.end()].fill(true);
+    }
+}
+
+fn feed_remainder_context(
+    text: &str,
+    start: usize,
+    end: usize,
+    noise: &[bool],
+    conjunction: &[bool],
+    non_separator_count: &mut usize,
+    alphanumeric_count: &mut usize,
+) {
+    for (offset, character) in text[start..end].char_indices() {
+        let index = start + offset;
+        if noise[index] {
+            continue;
+        }
+        if matches!(character, '\n' | '.' | '!' | '?' | ';') {
+            *non_separator_count = 0;
+            *alphanumeric_count = 0;
+            continue;
+        }
+        if conjunction[index] {
+            *alphanumeric_count += usize::from(character.is_alphanumeric());
+            continue;
+        }
+        let mut encoded = [0; 4];
+        if NON_SEPARATOR.is_match(character.encode_utf8(&mut encoded)) {
+            *non_separator_count += 1;
+        }
+        if character.is_alphanumeric() {
+            *alphanumeric_count += 1;
+        }
+    }
+}
+
+fn count_remainder_context(
+    text: &str,
+    start: usize,
+    end: usize,
+    noise: &[bool],
+    conjunction: &[bool],
+) -> (usize, usize) {
+    let mut non_separator_count = 0;
+    let mut alphanumeric_count = 0;
+    for (offset, character) in text[start..end].char_indices() {
+        let index = start + offset;
+        if noise[index] || matches!(character, '\n' | '.' | '!' | '?' | ';') {
+            continue;
+        }
+        if conjunction[index] {
+            alphanumeric_count += usize::from(character.is_alphanumeric());
+            continue;
+        }
+        let mut encoded = [0; 4];
+        if NON_SEPARATOR.is_match(character.encode_utf8(&mut encoded)) {
+            non_separator_count += 1;
+        }
+        alphanumeric_count += usize::from(character.is_alphanumeric());
+    }
+    (non_separator_count, alphanumeric_count)
+}
+
+fn mask_text(text: &str, spans: &mut [(usize, usize)]) -> String {
+    spans.sort_unstable();
+    let mut output = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for &(start, end) in spans.iter() {
+        let start = start.max(cursor);
+        if start >= end {
+            continue;
+        }
+        output.push_str(&text[cursor..start]);
+        output.extend(std::iter::repeat_n(' ', text[start..end].chars().count()));
+        cursor = end;
+    }
+    output.push_str(&text[cursor..]);
+    output
+}
+
 pub fn classify(message: Message) -> Result<Profile, Rejection> {
     if message.introductory {
         return Err(Rejection::Introductory);
     }
     static EXAMPLE: LazyLock<Regex> =
-        LazyLock::new(|| re(r"(?i)^\s*(?:цитирую|шаблон\s+анкеты|пример\s+анкеты)\s*:"));
+        LazyLock::new(|| re(r"(?i)^\s*(?:цитирую|шаблон\s+анкеты|(?:вот\s+)?пример\s+анкеты)\s*:"));
     if EXAMPLE.is_match(&message.authored_text) {
         return Err(Rejection::ForeignContact);
     }
@@ -328,53 +446,146 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
         }
     });
     let authored = exclude_single_quotes(&unquoted);
-    let mut remainder = authored.clone();
+    let captures = CONTACTS
+        .captures_iter(&authored)
+        .map(|capture| {
+            let matched = capture.get(0).unwrap();
+            ContactCapture {
+                start: matched.start(),
+                end: matched.end(),
+                kind: if capture.name("postfix").is_some() {
+                    CaptureKind::Postfix
+                } else if capture.name("unlabelled").is_some() {
+                    CaptureKind::Unlabelled
+                } else if capture.name("email").is_some() {
+                    CaptureKind::Email
+                } else if capture.name("url").is_some() {
+                    CaptureKind::Url
+                } else if capture.name("label").is_some() {
+                    CaptureKind::Label
+                } else {
+                    CaptureKind::Handle
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut non_unlabelled_prefix = Vec::with_capacity(captures.len() + 1);
+    non_unlabelled_prefix.push(0);
+    for capture in &captures {
+        non_unlabelled_prefix.push(
+            non_unlabelled_prefix.last().copied().unwrap()
+                + usize::from(capture.kind != CaptureKind::Unlabelled),
+        );
+    }
+    let instructions = INSTRUCTION
+        .find_iter(&authored)
+        .map(|matched| (matched.start(), matched.end()))
+        .collect::<Vec<_>>();
+    let foreign_markers = FOREIGN
+        .find_iter(&authored)
+        .map(|matched| (matched.start(), matched.end()))
+        .collect::<Vec<_>>();
+    let self_ownership_markers = SELF_OWNERSHIP
+        .find_iter(&authored)
+        .map(|matched| (matched.start(), matched.end()))
+        .collect::<Vec<_>>();
+    let line_breaks = authored
+        .match_indices('\n')
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let mut noise = vec![false; authored.len()];
+    mark_matches(&mut noise, &authored, &DECORATION);
+    let mut conjunction = vec![false; authored.len()];
+    mark_matches(&mut conjunction, &authored, &CONJUNCTION);
     let mut contacts = Vec::new();
+    let mut seen_contacts = HashSet::new();
     let mut previous_contact: Option<(usize, ContactKind)> = None;
     let mut foreign = false;
     let mut unresolved = false;
-    for cap in CONTACTS.captures_iter(&authored) {
-        let m = cap.get(0).unwrap();
-        let prefix = authored[..m.start()]
-            .rsplit(['\n', '.', '!', '?', ';'])
-            .next()
-            .unwrap_or("")
-            .trim();
-        if FOREIGN.is_match(prefix) {
+    let mut mask_spans = Vec::new();
+    let mut foreign_cursor = 0;
+    let mut foreign_boundary = 0;
+    let mut remainder_cursor = 0;
+    let mut remainder_non_separator_count = 0;
+    let mut remainder_alphanumeric_count = 0;
+    let mut instruction_cursor = 0;
+    for (capture_index, capture) in captures.iter().enumerate() {
+        let m_start = capture.start;
+        let m_end = capture.end;
+        for (offset, character) in authored[foreign_cursor..m_start].char_indices() {
+            if matches!(character, '\n' | '.' | '!' | '?' | ';') {
+                foreign_boundary = foreign_cursor + offset + character.len_utf8();
+            }
+        }
+        foreign_cursor = m_start;
+        feed_remainder_context(
+            &authored,
+            remainder_cursor,
+            m_start,
+            &noise,
+            &conjunction,
+            &mut remainder_non_separator_count,
+            &mut remainder_alphanumeric_count,
+        );
+        remainder_cursor = m_start;
+        let marker_index = foreign_markers.partition_point(|(_, end)| *end < m_start);
+        if let Some(&(marker_start, marker_end)) = foreign_markers.get(marker_index)
+            && marker_end == m_start
+            && marker_start >= foreign_boundary
+        {
             foreign = true;
+            let (non_separator_count, alphanumeric_count) =
+                count_remainder_context(&authored, marker_start, marker_end, &noise, &conjunction);
+            remainder_non_separator_count =
+                remainder_non_separator_count.saturating_sub(non_separator_count);
+            remainder_alphanumeric_count =
+                remainder_alphanumeric_count.saturating_sub(alphanumeric_count);
+            mask_spans.push((marker_start, m_end));
+            remainder_cursor = m_end;
             continue;
         }
-        let line_end = authored[m.end()..]
-            .find('\n')
-            .map_or(authored.len(), |n| m.end() + n);
-        let next_end = authored[line_end..]
-            .get(1..)
-            .and_then(|s| s.find('\n').map(|n| line_end + 1 + n))
+        let self_marker_index =
+            self_ownership_markers.partition_point(|(_, end)| *end <= foreign_boundary);
+        let explicitly_owned = self_ownership_markers
+            .get(self_marker_index)
+            .is_some_and(|(start, _)| *start < m_start);
+        let first_break = line_breaks.partition_point(|index| *index < m_end);
+        let next_end = line_breaks
+            .get(first_break + 1)
+            .copied()
             .unwrap_or(authored.len());
-        let nearby = &authored[m.end()..next_end];
-        let instruction = INSTRUCTION
-            .find(nearby)
-            .filter(|i| {
-                CONTACTS
-                    .captures_iter(&nearby[..i.start()])
-                    .all(|c| c.name("unlabelled").is_some())
-            })
-            .map(|m| m.as_str())
+        let nearby = &authored[m_end..next_end];
+        while instructions
+            .get(instruction_cursor)
+            .is_some_and(|(start, _)| *start < m_end)
+        {
+            instruction_cursor += 1;
+        }
+        let next_instruction = instructions.get(instruction_cursor).filter(|(start, _)| {
+            *start < next_end && {
+                let first_candidate = capture_index + 1;
+                let candidate_end = captures.partition_point(|candidate| candidate.start < *start);
+                non_unlabelled_prefix[candidate_end] == non_unlabelled_prefix[first_candidate]
+            }
+        });
+        let instruction = next_instruction
+            .map(|(start, end)| &authored[*start..*end])
             .unwrap_or("");
-        let (kind, mut raw) = if cap.name("postfix").is_some() {
+        let raw_match = &authored[m_start..m_end];
+        let (kind, mut raw) = if capture.kind == CaptureKind::Postfix {
             (
                 ContactKind::Discord,
-                m.as_str().split_whitespace().next().unwrap().to_owned(),
+                raw_match.split_whitespace().next().unwrap().to_owned(),
             )
-        } else if cap.name("unlabelled").is_some() {
+        } else if capture.kind == CaptureKind::Unlabelled {
             if instruction.is_empty() {
                 continue;
             }
-            (ContactKind::Unknown, m.as_str().trim().to_owned())
-        } else if cap.name("email").is_some() {
-            (ContactKind::Email, m.as_str().to_owned())
-        } else if cap.name("url").is_some() {
-            let url = m.as_str().trim_end_matches([')', '.', ',']);
+            (ContactKind::Unknown, raw_match.trim().to_owned())
+        } else if capture.kind == CaptureKind::Email {
+            (ContactKind::Email, raw_match.to_owned())
+        } else if capture.kind == CaptureKind::Url {
+            let url = raw_match.trim_end_matches([')', '.', ',']);
             let lower = url.to_ascii_lowercase();
             let scheme_len = if lower.starts_with("https://") {
                 "https://".len()
@@ -392,12 +603,12 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
                 },
                 path.to_owned(),
             )
-        } else if cap.name("label").is_some() {
-            let label = LABEL.find(m.as_str()).unwrap();
+        } else if capture.kind == CaptureKind::Label {
+            let label = LABEL.find(raw_match).unwrap();
             let name = label.as_str().to_lowercase();
             if name.starts_with("дс")
                 && !name.contains(':')
-                && m.as_str()[label.end()..].starts_with(|c: char| c.is_ascii_digit())
+                && raw_match[label.end()..].starts_with(|c: char| c.is_ascii_digit())
             {
                 continue;
             }
@@ -410,44 +621,40 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
             };
             (
                 kind,
-                m.as_str()[label.end()..].trim_start_matches('@').to_owned(),
+                raw_match[label.end()..].trim_start_matches('@').to_owned(),
             )
         } else {
-            let remaining_prefix = remainder[..m.start()]
-                .rsplit(['\n', '.', '!', '?', ';'])
-                .next()
-                .unwrap_or("");
             static SEPARATOR: LazyLock<Regex> =
                 LazyLock::new(|| re(r"^\s*[,;/]*\s*(?:(?:и|или)\s*)?$"));
-            let cleaned = DECORATION.replace_all(remaining_prefix, "");
-            if !SEPARATOR.is_match(&cleaned)
-                && !cleaned
-                    .trim_matches(|c: char| !c.is_alphanumeric())
-                    .is_empty()
+            let continued = previous_contact.filter(|(end, kind)| {
+                *kind == ContactKind::Telegram
+                    && !authored[*end..m_start].contains('\n')
+                    && SEPARATOR.is_match(&authored[*end..m_start])
+            });
+            if continued.is_none()
+                && remainder_non_separator_count > 0
+                && remainder_alphanumeric_count > 0
             {
                 continue;
             }
-            let continued = previous_contact.filter(|(end, kind)| {
-                *kind == ContactKind::Telegram
-                    && !authored[*end..m.start()].contains('\n')
-                    && SEPARATOR.is_match(&authored[*end..m.start()])
-            });
             if continued.is_some() {
                 (
                     ContactKind::Telegram,
-                    m.as_str().trim_start_matches('@').to_owned(),
+                    raw_match.trim_start_matches('@').to_owned(),
                 )
             } else {
-                (ContactKind::Unknown, m.as_str().to_owned())
+                (ContactKind::Unknown, raw_match.to_owned())
             }
         };
-        let suffix = &authored[m.end()..];
+        let suffix = &authored[m_end..];
         if suffix.starts_with(|c: char| {
             c.is_alphanumeric() || matches!(c, '_' | '/' | '?' | '#' | '=' | '-' | ':' | '+' | '~')
         }) {
+            mask_spans.push((m_start, m_end));
+            remainder_cursor = m_end;
             continue;
         }
-        let mut end = m.end();
+        let mut end = m_end;
         if !instruction.is_empty() {
             let tail = nearby.split('\n').next().unwrap_or("");
             let tail = INSTRUCTION.find(tail).map_or(tail, |i| &tail[..i.start()]);
@@ -467,10 +674,12 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
         }
         let Some(value) = canonical(kind, &raw) else {
             unresolved = true;
+            mask_spans.push((m_start, end));
+            remainder_cursor = end;
             continue;
         };
-        // Стираем байты, сохраняя позиции последующих совпадений UTF-8.
-        remainder.replace_range(m.start()..end, &" ".repeat(end - m.start()));
+        mask_spans.push((m_start, end));
+        remainder_cursor = end;
         previous_contact = Some((end, kind));
         let contact = Contact {
             kind,
@@ -493,16 +702,13 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
                 .map(|(_, name)| name)
                 .collect()
             },
-            ownership: if prefix.to_lowercase().contains("мой") {
+            ownership: if explicitly_owned {
                 Ownership::ExplicitSelf
             } else {
                 Ownership::ProfileSignature
             },
         };
-        if !contacts
-            .iter()
-            .any(|c: &Contact| c.kind == contact.kind && c.value == contact.value)
-        {
+        if seen_contacts.insert((contact.kind, contact.value.clone())) {
             contacts.push(contact);
         }
     }
@@ -515,6 +721,7 @@ pub fn classify(message: Message) -> Result<Profile, Rejection> {
             Rejection::NoOwnedContact
         });
     }
+    let remainder = mask_text(&authored, &mut mask_spans);
     let remainder = INSTRUCTION.replace_all(&remainder, "");
     let remainder = DECORATION.replace_all(&remainder, "");
     static CONTACT_LIST: LazyLock<Regex> =

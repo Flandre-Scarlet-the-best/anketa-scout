@@ -1,9 +1,10 @@
 use crate::{
     Failure,
-    domain::{Message, Profile, Rejection, classify},
+    domain::{Message, Origin, Profile, Rejection, classify},
 };
 use std::future::Future;
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 pub struct Report {
     pub source: String,
@@ -22,6 +23,12 @@ pub async fn run(
         _ = cancellation.cancelled() => return Err(Failure::Cancelled),
         messages = receive => messages.inspect_err(|failure| crate::diagnostics::failed(*failure))?,
     };
+    if messages
+        .iter()
+        .any(|message| !origin_matches_source(&message.origin, &source))
+    {
+        return Err(Failure::Format);
+    }
     let processed = messages.len();
     let mut profiles = Vec::new();
     let mut reasons = [0; 5];
@@ -50,6 +57,10 @@ pub async fn run(
                 crate::diagnostics::decision(post, Err(reason));
             }
         }
+        tokio::task::yield_now().await;
+    }
+    if cancellation.is_cancelled() {
+        return Err(Failure::Cancelled);
     }
     crate::diagnostics::completed(processed, profiles.len(), reasons);
     Ok(Report {
@@ -57,4 +68,31 @@ pub async fn run(
         processed,
         profiles,
     })
+}
+
+fn origin_matches_source(origin: &Origin, source: &str) -> bool {
+    let Ok(source_url) = Url::parse(source) else {
+        return false;
+    };
+    let expected_path = format!("/{}/res/{}.html", origin.board, origin.thread);
+    if origin.board.is_empty()
+        || !origin
+            .board
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        || origin.thread == 0
+        || origin.post == 0
+        || source_url.scheme() != "https"
+        || source_url.host_str() != Some(origin.source.as_str())
+        || source_url.port().is_some()
+        || !source_url.username().is_empty()
+        || source_url.password().is_some()
+        || source_url.query().is_some()
+        || source_url.fragment().is_some()
+        || source_url.as_str() != source
+        || source_url.path() != expected_path
+    {
+        return false;
+    }
+    origin.link == format!("{source}#{}", origin.post)
 }
