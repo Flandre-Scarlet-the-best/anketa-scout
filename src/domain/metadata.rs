@@ -85,7 +85,7 @@ impl Metadata {
     pub(super) fn extract(text: &str, attachments: &[Attachment]) -> Self {
         static SELF: LazyLock<Regex> = LazyLock::new(|| {
             re(
-                r"(?i)^(?:(?:я|о себе|пол)\s*[:—-]?\s*)?(кунчик|кун|парень|мужчина|м|тянка|тян|девушка|женщина|ж|д)\b",
+                r"(?i)^(?:(я|о себе|пол)\s*[:—-]?\s*)?(кунчик|кун|парень|мужчина|м|тянка|тян|девушка|женщина|ж|д)\b",
             )
         });
         static COMPACT: LazyLock<Regex> =
@@ -150,13 +150,19 @@ impl Metadata {
                     rest = rest[c[0].len()..].trim_start_matches([',', ' ', '.']);
                 }
                 if !compact_found && let Some(c) = SELF.captures(rest) {
-                    genders.push(match c[1].to_lowercase().as_str() {
-                        "кун" | "кунчик" | "парень" | "мужчина" | "м" => {
-                            Gender::Male
-                        }
-                        _ => Gender::Female,
-                    });
-                    rest = rest[c[0].len()..].trim_start_matches([',', ' ', ':']);
+                    let label = c[2].to_lowercase();
+                    let ambiguous_abbreviation = c.get(1).is_none()
+                        && matches!(label.as_str(), "м" | "ж" | "д")
+                        && matches!(rest[c[0].len()..].chars().next(), Some('.' | '/'));
+                    if !ambiguous_abbreviation {
+                        genders.push(match label.as_str() {
+                            "кун" | "кунчик" | "парень" | "мужчина" | "м" => {
+                                Gender::Male
+                            }
+                            _ => Gender::Female,
+                        });
+                        rest = rest[c[0].len()..].trim_start_matches([',', ' ', ':']);
+                    }
                 }
                 let explicit_age = EXPLICIT_AGE.captures(rest).filter(|capture| {
                     let tail = &rest[capture[0].len()..];

@@ -60,6 +60,18 @@ fn explicit_metadata_and_lower_age_bounds_are_independent() {
 }
 
 #[test]
+fn ambiguous_single_letter_gender_abbreviations_are_not_inferred() {
+    for text in [
+        "д. Простоквашино, люблю настольные игры",
+        "м. Сокол рядом",
+        "ж/д рядом",
+    ] {
+        assert_eq!(profile(text).metadata.gender, None, "{text}");
+    }
+    assert_eq!(profile("Пол: м.").metadata.gender, Some(Gender::Male));
+}
+
+#[test]
 fn metadata_collects_fields_across_sentences_and_explicit_bare_ages() {
     for text in [
         "Я девушка. Возраст: 25 лет. Город: Тула.",
