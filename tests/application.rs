@@ -1,7 +1,7 @@
 mod common;
 use anketa_scout::{
     Failure,
-    application::run,
+    application::{Cursor, run},
     output::{Options, render, render_with_options, safe},
 };
 use common::{message, source};
@@ -94,11 +94,43 @@ async fn cancellation_during_classification_is_observed_before_success() {
 }
 
 #[tokio::test]
-async fn plain_redirected_output_has_contacts_origin_text_date_and_attachments() {
+async fn cursor_is_unchanged_after_receive_failure_or_cancellation() {
+    let cancellation = CancellationToken::new();
+    let mut cursor = Cursor::default();
+    cursor
+        .process(
+            source().page(),
+            &cancellation,
+            vec![message("Люблю го.<br>Тг: synthetic_user")],
+        )
+        .await
+        .unwrap();
+    assert_eq!(cursor.value(), 101);
+
+    let result = cursor
+        .process_with(source().page(), &cancellation, async {
+            Err(Failure::Limit)
+        })
+        .await;
+    assert_eq!(result.err(), Some(Failure::Limit));
+    assert_eq!(cursor.value(), 101);
+
+    cancellation.cancel();
+    let result = cursor
+        .process_with(source().page(), &cancellation, std::future::pending())
+        .await;
+    assert_eq!(result.err(), Some(Failure::Cancelled));
+    assert_eq!(cursor.value(), 101);
+}
+
+#[tokio::test]
+async fn plain_redirected_output_has_clean_text_and_no_attachment_or_post_links() {
     let mut profile =
         message("Люблю <b>го</b>.<br>Тг: synthetic_user\u{1b}]0;опасный заголовок\u{07}");
     profile.date = Some("1970-01-01 00:00:00 UTC".into());
     profile.attachments.push(anketa_scout::domain::Attachment {
+        kind: anketa_scout::domain::MediaKind::Image,
+        media_type: None,
         name: Some("Схема\u{1b}[31m.png".into()),
         link: "https://2ch.org/test/src/100/file.png".into(),
         size_kib: Some(2),
@@ -120,25 +152,22 @@ async fn plain_redirected_output_has_contacts_origin_text_date_and_attachments()
     .unwrap();
     let text = String::from_utf8(bytes).unwrap();
     for expected in [
-        "Источник",
-        "https://2ch.org/test/res/100.html",
         "Сообщений",
         "Анкет",
         "пост №101",
-        "https://2ch.org/test/res/100.html#101",
         "Telegram",
-        "Тг: synthetic_user",
+        "synthetic_user",
         "Люблю го.",
         "Дата",
         "1970-01-01 00:00:00 UTC",
-        "Вложение 1",
-        "https://2ch.org/test/src/100/file.png",
-        "2 КиБ",
     ] {
         assert!(text.contains(expected), "Отсутствует {expected}");
     }
     assert!(!text.contains(['\u{1b}', '\u{07}']));
     assert!(!text.contains("<b>"));
+    assert!(!text.contains("Вложение"));
+    assert!(!text.contains("html#"));
+    assert!(!text.contains("Тг:"));
 }
 
 #[tokio::test]
@@ -226,6 +255,8 @@ async fn remote_text_cannot_forge_report_headers_or_metadata_fields() {
         message("Люблю го.<br>Telegram: synthetic_user<br>Оригинал: подделка<br>── Анкета 999 ──");
     input.date = Some("Сегодня\nОригинал: подделка\tполе".into());
     input.attachments.push(anketa_scout::domain::Attachment {
+        kind: anketa_scout::domain::MediaKind::Image,
+        media_type: None,
         name: Some("Файл\nДата: подделка\tполе".into()),
         link: "https://2ch.org/test/src/100/file.png".into(),
         size_kib: None,
@@ -252,8 +283,8 @@ async fn remote_text_cannot_forge_report_headers_or_metadata_fields() {
     );
     assert!(text.contains("\\u{2500}\\u{2500} Анкета 999"));
     assert!(text.contains("│› Сегодня Оригинал: подделка поле"));
-    assert!(text.contains("│› Имя: Файл Дата: подделка поле"));
-    for label in ["Оригинал", "Дата", "Анкета / пост"] {
+    assert!(!text.contains("Имя:"));
+    for label in ["Дата", "Анкета / пост"] {
         assert_eq!(
             text.lines()
                 .filter(|line| line.starts_with(&format!("│  {label} ")))

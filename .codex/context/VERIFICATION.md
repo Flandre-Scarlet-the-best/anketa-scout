@@ -117,15 +117,15 @@ Rust через штатный rustup на runner. Linux-прогон не до�
 | Конфиг: создание, повтор, гонка, явный путь, отсутствие файла | `first_run_creates_default_and_second_run_never_overwrites`, `concurrent_first_runs_read_complete_configuration`, `explicit_path_wins_and_does_not_create_default`, `missing_explicit_path_neither_creates_nor_falls_back` |
 | Конфиг: ошибки TOML, источники, размер и I/O | `invalid_toml_unknown_fields_and_wrong_types_are_errors_without_content_leaks`, `empty_multiple_and_unsupported_sources_are_rejected_before_fetch`, `config_size_boundary_is_enforced_without_overwriting`, `creation_failure_and_unreadable_path_are_specific_config_errors` |
 | CLI, диагностика и коды | `help_and_version_need_no_config_or_network`, `invalid_arguments_have_russian_safe_diagnostics_and_code_two`, `explicit_missing_or_invalid_config_fails_before_network_with_empty_stdout`, `error_categories_have_stable_distinct_exit_codes_without_remote_data` |
-| Безопасный вывод и различие пустого результата/ошибок | `plain_redirected_output_has_contacts_origin_text_date_and_attachments`, `all_terminal_controls_and_bidi_overrides_are_removed`, `empty_thread_and_no_profiles_have_different_summaries`, `failures_propagate_without_becoming_zero_profiles` |
+| Безопасный вывод и различие пустого результата/ошибок | `plain_redirected_output_has_clean_text_and_no_attachment_or_post_links`, `all_terminal_controls_and_bidi_overrides_are_removed`, `empty_thread_and_no_profiles_have_different_summaries`, `failures_propagate_without_becoming_zero_profiles` |
 | HTTP: статусы, запрет перенаправлений, лимит, обрыв, таймаут | `status_errors_and_redirects_keep_their_categories`, `declared_and_streamed_body_size_limits_are_enforced`, `truncated_http_body_is_network_failure`, `timeout_is_bounded_and_is_not_empty_success` |
 | URL, вложения, разметка и ограничения | `only_supported_public_thread_urls_are_accepted`, `attachment_urls_cannot_change_host_or_escape_board`, `comment_size_boundary_and_deep_markup_are_bounded` |
 | Контактные ссылки и ресурсные псевдоконтакты | `labelled_telegram_url_is_not_truncated_to_https_as_username`, `resource_links_and_invalid_contact_suffixes_are_rejected` |
-| Цитаты, апострофы, платформа контакта, скрытые HTTP-ссылки | `single_quoted_contacts_and_descriptions_are_not_author_evidence`, `bare_handle_does_not_establish_contact_platform`, `hidden_http_telegram_link_remains_a_contact` |
+| Цитаты, апострофы, платформа контакта, скрытые HTTP-ссылки | `single_quoted_contacts_and_descriptions_are_not_author_evidence`, `bare_signature_assumes_telegram_and_keeps_evidence`, `hidden_http_telegram_link_remains_a_contact` |
 | Отмена и закрытие активного соединения | `pre_cancelled_run_never_starts_the_source`, `cancellation_drops_pending_source_instead_of_returning_partial_report`, `cancellation_stops_in_flight_request_and_closes_socket` |
 | FIFO, подделка служебных полей и пустой ответ без OP | `fifo_config_without_writer_is_rejected_without_blocking` (Unix), `remote_text_cannot_forge_report_headers_or_metadata_fields`, `missing_op_is_partial_even_when_count_is_zero` |
 | Невозможность внешней подмены авторского текста | compile-fail doctest `Message::authored_text` |
-| Полные таблицы, порядок, все контакты, URL и вложения | `full_tables_preserve_all_fields_and_order` |
+| Полные таблицы, порядок, контакты, отсутствие URL постов и карточек вложений | `full_tables_preserve_all_fields_and_order` |
 | Ширина 8/24/40/75/76/80/96/120, неизвестная и минимальная геометрия, Unicode и абзацы | `unicode_tables_fit_width_and_preserve_paragraphs`, `repeated_paragraph_breaks_and_indentation_stay_in_the_cell` |
 | Явный compact с ограниченным превью без разрыва графем | `compact_is_explicit_and_preview_is_bounded` |
 | Изоляция ячеек при ANSI/bidi, поддельных полях и рамке | `untrusted_cells_cannot_forge_structure`, `remote_text_cannot_forge_report_headers_or_metadata_fields` |
@@ -155,3 +155,23 @@ SCOUT_AUDIT_JSON; для сравнения до/после обязательн
 literal_instructions_do_not_truncate_invalid_identifiers,
 adjacent_contacts_keep_platform_and_independent_values,
 contact_anchor_caption_does_not_supply_independent_text и multiline_quotes_cannot_become_owned_contacts.
+
+Структурированные сведения и очистка проверяются `tests/structured.rs`: явный автор
+против искомого собеседника, границы возраста, неоднозначность, ДС/Discord, отрицание
+онлайн, сохранение исходного текста, явные платформы против предположенной, медиа.
+`timestamp_roundtrip_includes_os_offset_and_dst_dates` проверяет обратимость Unix
+времени и смещение ОС для эпохи и дат переходов; фактическая зона зависит от ОС.
+`incremental_http_paths_cursor_failures_and_recovery` в транспорте записывает адреса
+локального HTTP-сервера: один полный JSON, затем только after, отклонённые посты,
+граничный дубликат, пакет из нескольких анкет, 404/429, обрыв тела и восстановление,
+пустой ответ. Курсор не меняется на ошибках. Флаги и интервал проверяются в `main`.
+Живую приёмку Release и Ctrl+C выполнять отдельно; отсутствие новых публикаций
+не подтверждает живое появление анкеты. Не публиковать захваченный stdout.
+
+На Unix `local_time_zones_and_dst_are_checked_in_fresh_processes` запускает отдельные
+процессы с UTC и America/New_York и проверяет известный переход 01:30 → 03:30
+с -05:00 на -04:00; переменные среды основного процесса не меняются.
+Для локальных живых захватов `SCOUT_AUDIT_DIR` указывает каталог с `thread.json`
+и `after-<курсор>.json`; команда `cargo test --locked --test offline_audit live_captures -- --ignored --nocapture`
+проверяет нормализацию граничного/пустого ответа и записывает приватный текстовый
+вывод на ширинах 40/80/120 в тот же каталог. По умолчанию эта проверка отключена.

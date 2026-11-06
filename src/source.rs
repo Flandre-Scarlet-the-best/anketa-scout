@@ -1,11 +1,12 @@
 use crate::{
     Failure,
-    domain::{Attachment, Message, Origin},
+    domain::{Attachment, MediaKind, Message, Origin},
 };
 use regex::Regex;
 use scraper::{ElementRef, Html, Node};
 use serde::Deserialize;
 use std::{collections::HashSet, sync::LazyLock};
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 pub const MAX_BODY: usize = 20 * 1024 * 1024;
@@ -64,6 +65,13 @@ impl ThreadUrl {
 
     pub fn endpoint(&self) -> String {
         format!("https://2ch.org/{}/res/{}.json", self.board, self.thread)
+    }
+
+    pub fn after_endpoint(&self, cursor: u64) -> String {
+        format!(
+            "https://2ch.org/api/mobile/v2/after/{}/{}/{cursor}",
+            self.board, self.thread
+        )
     }
 }
 
@@ -188,6 +196,8 @@ fn nullable_files<'de, D: serde::Deserializer<'de>>(
 }
 #[derive(Deserialize)]
 struct File {
+    #[serde(default, rename = "type", deserialize_with = "optional_media_type")]
+    media_type: Option<u64>,
     path: String,
     #[serde(default)]
     displayname: Option<String>,
@@ -196,11 +206,52 @@ struct File {
     size_kib: Option<u64>,
 }
 
+fn optional_media_type<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    // Новое необязательное поле не превращает ранее читаемый пост в ошибку треда.
+    Ok(Option::<serde_json::Value>::deserialize(deserializer)?.and_then(|value| value.as_u64()))
+}
+
+fn media_kind(code: Option<u64>, path: &str) -> MediaKind {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match code {
+        Some(1 | 2 | 9) => MediaKind::Image,
+        Some(6 | 10) => MediaKind::Video,
+        _ if matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "gif" | "webp") => MediaKind::Image,
+        _ if matches!(ext.as_str(), "webm" | "mp4" | "mov") => MediaKind::Video,
+        _ => MediaKind::Other,
+    }
+}
+
 pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failure> {
+    normalize_inner(source, bytes, None)
+}
+
+pub async fn normalize_cancellable(
+    source: &ThreadUrl,
+    bytes: Vec<u8>,
+    cancellation: &CancellationToken,
+) -> Result<Vec<Message>, Failure> {
+    let source = source.clone();
+    let worker_cancellation = cancellation.clone();
+    normalize_blocking(cancellation, move || {
+        normalize_inner(&source, &bytes, Some(&worker_cancellation))
+    })
+    .await
+}
+
+fn normalize_inner(
+    source: &ThreadUrl,
+    bytes: &[u8],
+    cancellation: Option<&CancellationToken>,
+) -> Result<Vec<Message>, Failure> {
+    check_cancellation(cancellation)?;
     if bytes.len() > MAX_BODY {
         return Err(Failure::Limit);
     }
     let envelope: Envelope = serde_json::from_slice(bytes).map_err(|_| Failure::Format)?;
+    check_cancellation(cancellation)?;
     if envelope.board.id != source.board
         || envelope.current_thread != source.thread
         || envelope.threads.len() != 1
@@ -219,9 +270,75 @@ pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failu
     if posts.len() != envelope.posts_count {
         return Err(Failure::Partial);
     }
+    normalize_posts(source, posts, true, cancellation)
+}
+
+#[derive(Deserialize)]
+struct Updates {
+    result: u8,
+    posts: Vec<Post>,
+}
+
+pub fn normalize_after(
+    source: &ThreadUrl,
+    bytes: &[u8],
+    cursor: u64,
+) -> Result<Vec<Message>, Failure> {
+    normalize_after_inner(source, bytes, cursor, None)
+}
+
+pub async fn normalize_after_cancellable(
+    source: &ThreadUrl,
+    bytes: Vec<u8>,
+    cursor: u64,
+    cancellation: &CancellationToken,
+) -> Result<Vec<Message>, Failure> {
+    let source = source.clone();
+    let worker_cancellation = cancellation.clone();
+    normalize_blocking(cancellation, move || {
+        normalize_after_inner(&source, &bytes, cursor, Some(&worker_cancellation))
+    })
+    .await
+}
+
+fn normalize_after_inner(
+    source: &ThreadUrl,
+    bytes: &[u8],
+    cursor: u64,
+    cancellation: Option<&CancellationToken>,
+) -> Result<Vec<Message>, Failure> {
+    check_cancellation(cancellation)?;
+    if bytes.len() > MAX_BODY {
+        return Err(Failure::Limit);
+    }
+    let updates: Updates = serde_json::from_slice(bytes).map_err(|_| Failure::Format)?;
+    check_cancellation(cancellation)?;
+    if updates.result != 1 {
+        return Err(Failure::Unavailable);
+    }
+    let messages = normalize_posts(source, updates.posts, false, cancellation)?;
+    if messages.iter().any(|message| message.origin.post < cursor) {
+        return Err(Failure::Format);
+    }
+    Ok(messages
+        .into_iter()
+        .filter(|message| message.origin.post > cursor)
+        .collect())
+}
+
+fn normalize_posts(
+    source: &ThreadUrl,
+    posts: Vec<Post>,
+    require_op: bool,
+    cancellation: Option<&CancellationToken>,
+) -> Result<Vec<Message>, Failure> {
+    if posts.len() > MAX_POSTS {
+        return Err(Failure::Limit);
+    }
     let mut seen = HashSet::new();
     let mut messages = Vec::with_capacity(posts.len());
     for post in posts {
+        check_cancellation(cancellation)?;
         if post.num == 0
             || !seen.insert(post.num)
             || (post.num != source.thread && post.parent != source.thread)
@@ -232,7 +349,7 @@ pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failu
         if post.comment.len() > MAX_COMMENT || post.files.len() > 100 {
             return Err(Failure::Limit);
         }
-        let (text, authored_text) = normalize_html(&post.comment)?;
+        let (text, authored_text) = normalize_html_inner(&post.comment, cancellation)?;
         let mut attachments = Vec::new();
         for file in post.files {
             // Вложения только показываем. Принимаем локальный путь доски, без иных хостов.
@@ -248,6 +365,8 @@ pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failu
                 return Err(Failure::Format);
             }
             attachments.push(Attachment {
+                kind: media_kind(file.media_type, &file.path),
+                media_type: file.media_type,
                 name: file.displayname,
                 link: link.into(),
                 size_kib: file.size_kib,
@@ -256,8 +375,11 @@ pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failu
         let date = post
             .timestamp
             .and_then(|stamp| chrono::DateTime::from_timestamp(stamp, 0))
-            .map(|date| date.format("%Y-%m-%d %H:%M:%S UTC").to_string())
-            .or(post.date.filter(|date| !date.trim().is_empty()));
+            .map(|date| {
+                date.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S %:z")
+                    .to_string()
+            });
         messages.push(Message {
             origin: Origin {
                 source: "2ch.org".to_owned(),
@@ -270,11 +392,13 @@ pub fn normalize(source: &ThreadUrl, bytes: &[u8]) -> Result<Vec<Message>, Failu
             text,
             authored_text,
             date,
+            timestamp: post.timestamp,
+            source_date: post.date,
             attachments,
             introductory: post.num == source.thread,
         });
     }
-    if !seen.contains(&source.thread) {
+    if require_op && !seen.contains(&source.thread) {
         return Err(Failure::Partial);
     }
     Ok(messages)
@@ -285,7 +409,9 @@ fn walk(
     omit_quotes: bool,
     depth: usize,
     output: &mut String,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<(), Failure> {
+    check_cancellation(cancellation)?;
     if depth > 128 {
         return Err(Failure::Limit);
     }
@@ -311,7 +437,7 @@ fn walk(
         if let Node::Text(text) = child.value() {
             output.push_str(text);
         } else if let Some(element) = ElementRef::wrap(child) {
-            walk(element, omit_quotes, depth + 1, output)?;
+            walk(element, omit_quotes, depth + 1, output, cancellation)?;
         }
     }
     if name == "a"
@@ -334,14 +460,23 @@ fn walk(
 }
 
 pub fn normalize_html(input: &str) -> Result<(String, String), Failure> {
+    normalize_html_inner(input, None)
+}
+
+fn normalize_html_inner(
+    input: &str,
+    cancellation: Option<&CancellationToken>,
+) -> Result<(String, String), Failure> {
+    check_cancellation(cancellation)?;
     if input.len() > MAX_COMMENT {
         return Err(Failure::Limit);
     }
     let html = Html::parse_fragment(input);
+    check_cancellation(cancellation)?;
     let mut text = String::new();
     let mut authored = String::new();
-    walk(html.root_element(), false, 0, &mut text)?;
-    walk(html.root_element(), true, 0, &mut authored)?;
+    walk(html.root_element(), false, 0, &mut text, cancellation)?;
+    walk(html.root_element(), true, 0, &mut authored, cancellation)?;
     fn tidy(text: &str) -> String {
         text.lines()
             .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
@@ -350,4 +485,27 @@ pub fn normalize_html(input: &str) -> Result<(String, String), Failure> {
             .join("\n")
     }
     Ok((tidy(&text), tidy(&authored)))
+}
+
+fn check_cancellation(cancellation: Option<&CancellationToken>) -> Result<(), Failure> {
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        Err(Failure::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+async fn normalize_blocking(
+    cancellation: &CancellationToken,
+    work: impl FnOnce() -> Result<Vec<Message>, Failure> + Send + 'static,
+) -> Result<Vec<Message>, Failure> {
+    let mut task = tokio::task::spawn_blocking(work);
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => {
+            let _ = task.await;
+            Err(Failure::Cancelled)
+        }
+        result = &mut task => result.unwrap_or(Err(Failure::Format)),
+    }
 }

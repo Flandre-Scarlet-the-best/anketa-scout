@@ -1,10 +1,14 @@
 mod common;
 use anketa_scout::{
     Failure,
-    source::{MAX_COMMENT, ThreadUrl, normalize, normalize_html},
+    source::{
+        MAX_BODY, MAX_COMMENT, ThreadUrl, normalize, normalize_after_cancellable, normalize_html,
+    },
 };
 use common::{envelope, post, source};
 use serde_json::json;
+use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 #[test]
 fn confirmed_json_shape_preserves_origin_date_files_and_raw_body() {
@@ -30,7 +34,17 @@ fn confirmed_json_shape_preserves_origin_date_files_and_raw_body() {
         message.original(),
         "Люблю <b>го</b> &amp; шахматы.<br>Тг: synthetic_user"
     );
-    assert_eq!(message.date.as_deref(), Some("1970-01-01 00:00:00 UTC"));
+    assert_eq!(
+        message.date.as_deref(),
+        Some(
+            chrono::DateTime::from_timestamp(0, 0)
+                .unwrap()
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M:%S %:z")
+                .to_string()
+                .as_str()
+        )
+    );
     assert_eq!(
         message.attachments[0].link,
         "https://2ch.org/test/src/100/image.png"
@@ -253,12 +267,35 @@ fn post_count_and_attachment_limits_accept_boundary_then_reject_overflow() {
 }
 
 #[test]
-fn date_text_is_used_only_when_timestamp_is_unavailable() {
+fn invalid_or_missing_timestamp_never_invents_local_date() {
     let mut input = envelope(vec![post(100, "Текст")]);
     input["threads"][0]["posts"][0]["date"] = json!("Дата из источника");
     let messages = normalize(&source(), &serde_json::to_vec(&input).unwrap()).unwrap();
-    assert_eq!(messages[0].date.as_deref(), Some("Дата из источника"));
+    assert_eq!(messages[0].date, None);
     input["threads"][0]["posts"][0]["timestamp"] = json!(i64::MAX);
     let messages = normalize(&source(), &serde_json::to_vec(&input).unwrap()).unwrap();
-    assert_eq!(messages[0].date.as_deref(), Some("Дата из источника"));
+    assert_eq!(messages[0].date, None);
+}
+
+#[tokio::test]
+async fn cancellation_interrupts_normalization_of_a_large_allowed_incremental_packet() {
+    let comment = "x".repeat(MAX_COMMENT);
+    let posts = (101..221)
+        .map(|number| post(number, &comment))
+        .collect::<Vec<_>>();
+    let bytes = serde_json::to_vec(&json!({"result":1,"posts":posts})).unwrap();
+    assert!(bytes.len() <= MAX_BODY);
+
+    let cancellation = CancellationToken::new();
+    let cancel = cancellation.clone();
+    let trigger = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        cancel.cancel();
+    });
+    let started = Instant::now();
+    let result = normalize_after_cancellable(&source(), bytes, 100, &cancellation).await;
+    trigger.await.unwrap();
+
+    assert_eq!(result.unwrap_err(), Failure::Cancelled);
+    assert!(started.elapsed() < Duration::from_secs(1));
 }

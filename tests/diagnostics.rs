@@ -33,6 +33,29 @@ fn logging_levels_and_streams_never_expose_remote_content() {
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
             .collect::<Vec<_>>();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event["event"] == "Получение прервано")
+                .count(),
+            2
+        );
+        if matches!(level, "INFO" | "DEBUG" | "TRACE") {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event["event"] == "Начало получения")
+                    .count(),
+                3
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event["event"] == "Обработка завершена")
+                    .count(),
+                1
+            );
+        }
         for allowed in &expected {
             assert!(events.iter().any(|v| v["level"] == *allowed));
         }
@@ -68,5 +91,16 @@ async fn logging_probe() {
         })
         .await
         .is_err()
+    );
+    let source = common::source();
+    let mut cursor = application::Cursor::default();
+    assert_eq!(
+        cursor
+            .process_with(source.page(), &cancellation, async {
+                anketa_scout::source::normalize(&source, b"{")
+            })
+            .await
+            .err(),
+        Some(Failure::Format)
     );
 }

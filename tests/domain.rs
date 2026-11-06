@@ -27,6 +27,49 @@ fn short_profile_needs_no_demographics_or_at_sign() {
 }
 
 #[test]
+fn ambiguous_max_words_are_not_contacts_or_hidden_text() {
+    assert!(classify(message("Люблю играть в Max Payne")).is_err());
+
+    let profile = classify(message(
+        "Меня зовут Макс 25. Люблю го.<br>ТГ: synthetic_user",
+    ))
+    .unwrap();
+    assert!(profile.description.contains("Макс 25"));
+    assert_eq!(profile.contacts.len(), 1);
+    assert_eq!(profile.contacts[0].kind, ContactKind::Telegram);
+
+    let explicit = classify(message("Люблю го.<br>MAX: synthetic_user")).unwrap();
+    assert_eq!(explicit.contacts[0].kind, ContactKind::Max);
+
+    let previous_line = classify(message("Люблю го.<br>Макс<br>@synthetic_user")).unwrap();
+    assert_eq!(previous_line.contacts[0].kind, ContactKind::Telegram);
+    assert!(previous_line.description.contains("Макс"));
+
+    for separator in ['-', '—'] {
+        let text = format!("Меня зовут Макс {separator} 25 лет. Люблю го.<br>ТГ: synthetic_user");
+        let profile = classify(message(&text)).unwrap();
+        assert!(
+            profile
+                .description
+                .contains(&format!("Макс {separator} 25 лет"))
+        );
+    }
+}
+
+#[test]
+fn dash_contact_separators_remain_supported_for_telegram_and_vk() {
+    for (label, kind) in [
+        ("ТГ - synthetic_user", ContactKind::Telegram),
+        ("ТГ — synthetic_user", ContactKind::Telegram),
+        ("VK - synthetic_user", ContactKind::Vk),
+        ("VK — synthetic_user", ContactKind::Vk),
+    ] {
+        let profile = classify(message(&format!("Люблю го.<br>{label}"))).unwrap();
+        assert_eq!(profile.contacts[0].kind, kind, "{label}");
+    }
+}
+
+#[test]
 fn natural_goal_without_search_keyword_is_sufficient() {
     let profile = classify(message(
         "С удовольствием поговорю о книгах.<br>Почта: reader@example.invalid",
@@ -280,9 +323,10 @@ fn unmatched_single_quote_keeps_the_rest_of_an_authored_profile() {
 }
 
 #[test]
-fn bare_handle_does_not_establish_contact_platform() {
+fn bare_signature_assumes_telegram_and_keeps_evidence() {
     let profile = classify(message("Произвольная заметка.<br>@synthetic_user")).unwrap();
-    assert_eq!(profile.contacts[0].kind, ContactKind::Unknown);
+    assert_eq!(profile.contacts[0].kind, ContactKind::Telegram);
+    assert!(profile.contacts[0].assumed_platform);
     assert!(classify(message("Произвольная заметка, читаю @synthetic_user")).is_err());
     assert_eq!(
         classify(message(
@@ -293,6 +337,25 @@ fn bare_handle_does_not_establish_contact_platform() {
             .kind,
         ContactKind::Telegram
     );
+}
+
+#[test]
+fn duplicate_contact_merges_platform_and_ownership_evidence_in_either_order() {
+    for text in [
+        "Люблю го.<br>@synthetic_user<br>Мой ТГ: synthetic_user",
+        "Люблю го.<br>Мой ТГ: synthetic_user<br>@synthetic_user",
+    ] {
+        let profile = classify(message(text)).unwrap();
+        assert_eq!(profile.contacts.len(), 1, "{text}");
+        assert_eq!(profile.contacts[0].kind, ContactKind::Telegram, "{text}");
+        assert_eq!(profile.contacts[0].value, "@synthetic_user", "{text}");
+        assert!(!profile.contacts[0].assumed_platform, "{text}");
+        assert_eq!(
+            profile.contacts[0].ownership,
+            Ownership::ExplicitSelf,
+            "{text}"
+        );
+    }
 }
 #[test]
 fn hidden_http_telegram_link_remains_a_contact() {
@@ -394,6 +457,93 @@ fn colloquial_discord_labels_are_not_geography() {
 }
 
 #[test]
+fn contact_labels_share_aliases_on_the_same_or_previous_line() {
+    for (text, kind, value) in [
+        (
+            "Люблю го.<br>Дискордик: @synthetic_user",
+            ContactKind::Discord,
+            "synthetic_user",
+        ),
+        (
+            "Люблю го.<br>Дискордик:<br>@synthetic_user",
+            ContactKind::Discord,
+            "synthetic_user",
+        ),
+        (
+            "Люблю го.<br>Диск:<br>@synthetic_user",
+            ContactKind::Discord,
+            "synthetic_user",
+        ),
+        (
+            "Люблю го.<br>Телега:<br>@synthetic_user",
+            ContactKind::Telegram,
+            "@synthetic_user",
+        ),
+        (
+            "Люблю го.<br>ТГшка:<br>@synthetic_user",
+            ContactKind::Telegram,
+            "@synthetic_user",
+        ),
+    ] {
+        let profile = classify(message(text)).unwrap();
+        assert_eq!(profile.contacts.len(), 1, "{text}");
+        assert_eq!(profile.contacts[0].kind, kind, "{text}");
+        assert_eq!(profile.contacts[0].value, value, "{text}");
+        assert!(!profile.contacts[0].assumed_platform, "{text}");
+    }
+}
+
+#[test]
+fn distinct_contacts_are_not_merged_by_platform_evidence() {
+    let profile = classify(message(
+        "Люблю го.<br>@synthetic_user<br>Мой Discord: different_user",
+    ))
+    .unwrap();
+    assert_eq!(profile.contacts.len(), 2);
+    assert_eq!(profile.contacts[0].kind, ContactKind::Telegram);
+    assert_eq!(profile.contacts[0].value, "@synthetic_user");
+    assert_eq!(profile.contacts[1].kind, ContactKind::Discord);
+    assert_eq!(profile.contacts[1].value, "different_user");
+}
+
+#[test]
+fn cleanup_instruction_is_removed_without_neighboring_prose() {
+    let text = "Люблю го.<br>Тг: syn0thetic<br>(Убери нули). Люблю прогулки.";
+    let profile = classify(message(text)).unwrap();
+    assert!(!profile.description.contains("Убери нули"));
+    assert_eq!(profile.description, "Люблю го.\nЛюблю прогулки.");
+    assert!(
+        profile
+            .message
+            .authored_text()
+            .contains("(Убери нули). Люблю прогулки.")
+    );
+
+    let inline = classify(message(
+        "Люблю го.<br>Тг: syn0thetic (Убери нули). Люблю прогулки.",
+    ))
+    .unwrap();
+    assert!(!inline.description.contains("Убери нули"));
+    assert_eq!(inline.description, "Люблю го.\nЛюблю прогулки.");
+
+    let prose = classify(message(
+        "Люблю го.<br>Тг: synthetic_user<br>(Очень люблю прогулки).",
+    ))
+    .unwrap();
+    assert!(prose.description.contains("(Очень люблю прогулки)"));
+}
+
+#[test]
+fn foreign_contact_does_not_anchor_instruction_cleanup() {
+    let profile = classify(message(
+        "Люблю книги.<br>Его ТГ: @foreign_user (Убери нули). Люблю прогулки.<br>Мой ТГ: synthetic_user",
+    ))
+    .unwrap();
+    assert!(profile.description.contains("(Убери нули)"));
+    assert!(profile.description.contains("Люблю прогулки."));
+}
+
+#[test]
 fn snapshot_restoration_shapes_keep_unknown_platform_explicit() {
     for (html, expected) in [
         (
@@ -410,7 +560,14 @@ fn snapshot_restoration_shapes_keep_unknown_platform_explicit() {
         ),
     ] {
         let p = classify(message(html)).unwrap();
-        assert_eq!(p.contacts[0].kind, ContactKind::Unknown);
+        assert_eq!(
+            p.contacts[0].kind,
+            if html.contains("@") {
+                ContactKind::Telegram
+            } else {
+                ContactKind::Unknown
+            }
+        );
         assert_eq!(p.contacts[0].value, expected);
     }
     let p = classify(message("Заметка.<br>synthetic_user дискорд")).unwrap();
@@ -446,7 +603,11 @@ fn adjacent_contacts_keep_platform_and_independent_values() {
     assert_eq!(p.contacts[1].kind, ContactKind::Telegram);
     let p = classify(message("Заметка.<br>@synthetic_one, @synthetic_two")).unwrap();
     assert_eq!(p.contacts.len(), 2);
-    assert!(p.contacts.iter().all(|c| c.kind == ContactKind::Unknown));
+    assert!(
+        p.contacts
+            .iter()
+            .all(|c| c.kind == ContactKind::Telegram && c.assumed_platform)
+    );
 }
 
 #[test]

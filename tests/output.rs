@@ -2,7 +2,7 @@ mod common;
 use anketa_scout::{
     application::Report,
     domain::{Attachment, classify},
-    output::{Options, View, render_with_options, style::*},
+    output::{Options, View, render_batch, render_with_options, style::*},
 };
 use common::message;
 
@@ -13,11 +13,15 @@ fn fixture() -> Report {
     first.date = Some("1970-01-01 00:00:00 UTC".into());
     first.attachments = vec![
         Attachment {
+            kind: anketa_scout::domain::MediaKind::Image,
+            media_type: None,
             name: Some("棋 схема.png".into()),
             link: "https://2ch.org/test/src/100/one.png".into(),
             size_kib: Some(7),
         },
         Attachment {
+            kind: anketa_scout::domain::MediaKind::Image,
+            media_type: None,
             name: None,
             link: "https://2ch.org/test/src/100/two.png".into(),
             size_kib: None,
@@ -110,8 +114,8 @@ fn full_tables_preserve_all_fields_and_order() {
         for profile in &report.profiles {
             let m = &profile.message;
             assert!(contains(&format!("пост №{}", m.origin.post)));
-            assert!(contains(&m.origin.link));
-            assert!(contains(m.text()));
+            assert!(!contains(&m.origin.link));
+            assert!(contains(&profile.description));
             if let Some(date) = &m.date {
                 assert!(contains(date));
             }
@@ -120,6 +124,7 @@ fn full_tables_preserve_all_fields_and_order() {
                     anketa_scout::domain::ContactKind::Telegram => "Telegram",
                     anketa_scout::domain::ContactKind::Discord => "Discord",
                     anketa_scout::domain::ContactKind::Email => "Почта",
+                    anketa_scout::domain::ContactKind::Max => "MAX",
                     anketa_scout::domain::ContactKind::Vk => "VK",
                     anketa_scout::domain::ContactKind::Unknown => "Платформа неизвестна",
                 };
@@ -134,14 +139,9 @@ fn full_tables_preserve_all_fields_and_order() {
                 }));
             }
             for a in &m.attachments {
-                assert!(contains(&a.link));
-                if let Some(name) = &a.name {
-                    assert!(contains(name));
-                }
-                if let Some(size) = a.size_kib {
-                    assert!(contains(&format!("{size} КиБ")));
-                }
+                assert!(!contains(&a.link));
             }
+            assert!(!text.contains("Вложение"));
         }
         let first = cells
             .iter()
@@ -246,6 +246,70 @@ fn compact_is_explicit_and_preview_is_bounded() {
 }
 
 #[test]
+fn thread_source_is_visible_without_post_or_attachment_links_in_both_views() {
+    let report = fixture();
+    for view in [View::Full, View::Compact] {
+        for width in [Some(8), Some(40), Some(96)] {
+            let text = draw(
+                &report,
+                Options {
+                    view,
+                    width,
+                    ..Options::default()
+                },
+            );
+            let labelled = labelled_cells(&text);
+            let sources: Vec<_> = labelled
+                .iter()
+                .filter(|(label, _)| label == "Тред")
+                .collect();
+            assert_eq!(sources.len(), 1, "Источник должен быть только в сводке");
+            assert!(joined(&sources[0].1).contains(&joined(&report.source)));
+
+            for profile in &report.profiles {
+                assert!(!text.contains(&profile.message.origin.link));
+                for attachment in &profile.message.attachments {
+                    assert!(!text.contains(&attachment.link));
+                }
+            }
+            assert!(!text.contains("Вложение"));
+        }
+    }
+}
+
+#[test]
+fn thread_source_is_sanitized_and_not_repeated_in_later_batches() {
+    let mut report = fixture();
+    let thread_url = report.source.clone();
+    report.source.push_str("\n│ ПОДДЕЛКА | › \u{1b}[2J\u{202e}");
+    let text = draw(
+        &report,
+        Options {
+            width: Some(40),
+            ..Options::default()
+        },
+    );
+    assert!(!text.contains('\u{1b}'));
+    assert!(!text.contains('\u{202e}'));
+    assert!(text.contains("\\u{2502}"));
+    assert!(text.contains("\\u{007C}"));
+    assert!(text.contains("\\u{203A}"));
+    assert_eq!(
+        labelled_cells(&text)
+            .iter()
+            .filter(|(label, _)| label == "Тред")
+            .count(),
+        1
+    );
+
+    let mut bytes = vec![];
+    render_batch(&report, &mut bytes, Options::default(), false).unwrap();
+    let later_batch = String::from_utf8(bytes).unwrap();
+    assert!(!later_batch.contains("Тред"));
+    assert!(!later_batch.contains(&thread_url));
+}
+
+#[test]
 fn untrusted_cells_cannot_forge_structure() {
     let attack = "Люблю го.<br>Тг: synthetic_user<br>│ ╭╮╰╯ ┬ ┼ | ›<br>Дата: подделка<br>Anketa Scout<br><br>Telegram: подделка\u{1b}]8;;https://evil.invalid\u{07}\u{1b}[2J\u{202e}\u{2066}";
     let mut report = fixture();
@@ -255,6 +319,8 @@ fn untrusted_cells_cannot_forge_structure() {
     m.date = Some("Дата\n│подделка".into());
     m.origin.link = format!("https://2ch.org/{}", "x".repeat(200));
     m.attachments.push(Attachment {
+        kind: anketa_scout::domain::MediaKind::Image,
+        media_type: None,
         name: Some("╞\nДата: файл".into()),
         link: "https://2ch.org/│\u{1b}[0m".into(),
         size_kib: Some(1),
@@ -277,7 +343,7 @@ fn untrusted_cells_cannot_forge_structure() {
         assert!(data.iter().any(|c| joined(c).contains("\\u{2502}")));
         assert!(
             data.iter()
-                .any(|c| joined(c).contains(&report.profiles[0].message.origin.link))
+                .all(|c| !joined(c).contains(&report.profiles[0].message.origin.link))
         );
         // Во всех строках ровно столько разделителей, сколько задал доверенный заголовок.
         let mut separators = 0;
@@ -359,14 +425,14 @@ fn summary_counts_and_empty_states_do_not_invent_profiles() {
     let mut report = fixture();
     let text = draw(&report, Options::default());
     let data = cells(&text);
-    assert_eq!(&data[2..4], &["3\n", "2\n"]);
+    assert_eq!(&data[3..5], &["3\n", "2\n"]);
     report.profiles.clear();
     for (processed, status) in [(0, "пустой тред"), (3, "не найдено")] {
         report.processed = processed;
         let text = draw(&report, Options::default());
         let data = cells(&text);
-        assert_eq!(data[2], format!("{processed}\n"));
-        assert_eq!(data[3], "0\n");
+        assert_eq!(data[3], format!("{processed}\n"));
+        assert_eq!(data[4], "0\n");
         assert!(text.contains(status));
         assert!(!text.contains("пост №"));
         assert!(!text.contains("Контакты"));

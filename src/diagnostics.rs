@@ -79,6 +79,7 @@ pub(crate) fn contact(post: u64, kind: ContactKind, operations: &[&'static str])
         ContactKind::Telegram => "Telegram",
         ContactKind::Discord => "Discord",
         ContactKind::Email => "Почта",
+        ContactKind::Max => "MAX",
         ContactKind::Vk => "VK",
         ContactKind::Unknown => "Неизвестна",
     };

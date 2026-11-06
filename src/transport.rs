@@ -23,12 +23,77 @@ fn client_builder() -> ClientBuilder {
         .https_only(true)
 }
 
+/// HTTP-клиент одного сеанса получения.
+pub struct Session {
+    client: Client,
+}
+
+impl Session {
+    pub fn new() -> Result<Self, Failure> {
+        Ok(Self {
+            client: client_builder().build().map_err(network)?,
+        })
+    }
+
+    pub async fn fetch(
+        &self,
+        source: &ThreadUrl,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<u8>, Failure> {
+        self.fetch_at(source, None, cancellation, "https://2ch.org")
+            .await
+    }
+
+    pub async fn fetch_after(
+        &self,
+        source: &ThreadUrl,
+        cursor: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<u8>, Failure> {
+        self.fetch_at(source, Some(cursor), cancellation, "https://2ch.org")
+            .await
+    }
+
+    async fn fetch_at(
+        &self,
+        source: &ThreadUrl,
+        cursor: Option<u64>,
+        cancellation: &CancellationToken,
+        base: &str,
+    ) -> Result<Vec<u8>, Failure> {
+        fetch_with_client(&self.client, source, cursor, cancellation, base).await
+    }
+}
+
 pub async fn fetch(
     source: &ThreadUrl,
     cancellation: &CancellationToken,
 ) -> Result<Vec<u8>, Failure> {
-    let client = client_builder().build().map_err(network)?;
-    request(&client, &source.endpoint(), cancellation).await
+    let session = Session::new()?;
+    session.fetch(source, cancellation).await
+}
+
+pub async fn fetch_after(
+    source: &ThreadUrl,
+    cursor: u64,
+    cancellation: &CancellationToken,
+) -> Result<Vec<u8>, Failure> {
+    let session = Session::new()?;
+    session.fetch_after(source, cursor, cancellation).await
+}
+
+async fn fetch_with_client(
+    client: &Client,
+    source: &ThreadUrl,
+    cursor: Option<u64>,
+    cancellation: &CancellationToken,
+    base: &str,
+) -> Result<Vec<u8>, Failure> {
+    let endpoint = cursor.map_or_else(|| source.endpoint(), |cursor| source.after_endpoint(cursor));
+    let path = endpoint
+        .strip_prefix("https://2ch.org")
+        .ok_or(Failure::Format)?;
+    request(client, &format!("{base}{path}"), cancellation).await
 }
 
 async fn request(
@@ -116,6 +181,124 @@ mod tests {
             .no_proxy()
             .build()
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn incremental_http_paths_cursor_failures_and_recovery() {
+        use crate::{
+            application::Cursor,
+            source::{normalize, normalize_after},
+        };
+        use serde_json::json;
+        let source = ThreadUrl::parse("https://2ch.org/test/res/100.html").unwrap();
+        let post = |num, comment| json!({"num":num,"parent":if num == 100 {0}else{100},"comment":comment,"files":[]});
+        let batch = |posts| json!({"result":1,"posts":posts}).to_string();
+        let initial = json!({"board":{"id":"test"},"current_thread":100,"posts_count":2,"threads":[{"posts":[post(100,"Вступление"),post(101,"Заметка. ТГ: synthetic_one")]}]}).to_string();
+        let replies = vec![
+            (200, initial),
+            (
+                200,
+                batch(vec![
+                    post(101, "Заметка. ТГ: synthetic_one"),
+                    post(102, "Заметка. ТГ: synthetic_two"),
+                    post(103, "Без контакта"),
+                ]),
+            ),
+            (429, "{}".into()),
+            (404, "{}".into()),
+            (200, "обрыв".into()),
+            (
+                200,
+                batch(vec![
+                    post(103, "Без контакта"),
+                    post(104, "Заметка. ТГ: synthetic_three"),
+                    post(105, "Заметка. ТГ: synthetic_four"),
+                ]),
+            ),
+            (200, batch(vec![])),
+        ];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let mut paths = Vec::new();
+            for (index, (status, body)) in replies.into_iter().enumerate() {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = [0; 4096];
+                let n = stream.read(&mut bytes).unwrap();
+                paths.push(
+                    String::from_utf8_lossy(&bytes[..n])
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap()
+                        .to_owned(),
+                );
+                let length = body.len() + if index == 4 { 100 } else { 0 };
+                write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}").unwrap();
+            }
+            paths
+        });
+        let session = Session {
+            client: test_client(),
+        };
+        let cancel = CancellationToken::new();
+        let mut cursor = Cursor::default();
+        let bytes = session
+            .fetch_at(&source, None, &cancel, &base)
+            .await
+            .unwrap();
+        let report = cursor
+            .process(source.page(), &cancel, normalize(&source, &bytes).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(report.profiles.len(), 1);
+        let mut accepted = vec![101];
+        for expected in [
+            Ok(1),
+            Err(Failure::RateLimit),
+            Err(Failure::Unavailable),
+            Err(Failure::Network),
+            Ok(2),
+            Ok(0),
+        ] {
+            let before = cursor.value();
+            let result = async {
+                let bytes = session
+                    .fetch_at(&source, Some(cursor.value()), &cancel, &base)
+                    .await?;
+                let messages = normalize_after(&source, &bytes, cursor.value())?;
+                cursor.process(source.page(), &cancel, messages).await
+            }
+            .await;
+            match (result, expected) {
+                (Ok(report), Ok(n)) => {
+                    assert_eq!(report.profiles.len(), n);
+                    accepted.extend(report.profiles.iter().map(|p| p.message.origin.post));
+                }
+                (Err(error), Err(expected)) => {
+                    assert_eq!(error, expected);
+                    assert_eq!(cursor.value(), before);
+                }
+                _ => panic!("Неожиданный результат опроса"),
+            }
+        }
+        assert_eq!(accepted, vec![101, 102, 104, 105]);
+        assert_eq!(cursor.value(), 105);
+        let paths = server.join().unwrap();
+        assert_eq!(
+            paths,
+            [
+                "/test/res/100.json",
+                "/api/mobile/v2/after/test/100/101",
+                "/api/mobile/v2/after/test/100/103",
+                "/api/mobile/v2/after/test/100/103",
+                "/api/mobile/v2/after/test/100/103",
+                "/api/mobile/v2/after/test/100/103",
+                "/api/mobile/v2/after/test/100/105"
+            ]
+        );
     }
 
     #[tokio::test]
